@@ -27,6 +27,7 @@ export class RagQdrantService {
     const ragConfig = this.configService.get<TRagConfig>(RAG_CONFIG);
     this.client = new QdrantClient({
       url: ragConfig?.qdrantUrl || 'http://localhost:6333',
+      apiKey: ragConfig?.qdrantApiKey
     });
   }
 

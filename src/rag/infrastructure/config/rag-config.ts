@@ -16,6 +16,7 @@ export type TRagConfig = {
   ollamaVisionModel: string;
 
   qdrantUrl: string;
+  qdrantApiKey: string | undefined;
 
   s3Endpoint: string | undefined;
   s3AccessKey: string;
@@ -46,6 +47,7 @@ export const ragConfig = registerAs(RAG_CONFIG, (): TRagConfig => {
     OLLAMA_VISION_MODEL,
 
     QDRANT_URL,
+    QDRANT_API_KEY,
 
     S3_ENDPOINT,
     S3_ACCESS_KEY,
@@ -93,6 +95,7 @@ export const ragConfig = registerAs(RAG_CONFIG, (): TRagConfig => {
     
 
     qdrantUrl: QDRANT_URL || 'http://localhost:6333',
+    qdrantApiKey: QDRANT_API_KEY
 
     s3Endpoint: S3_ENDPOINT,
     s3AccessKey: S3_ACCESS_KEY ?? '',
