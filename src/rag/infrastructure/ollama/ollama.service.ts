@@ -35,7 +35,7 @@ export class OllamaService {
   private readonly textEmbedModel: string;
   private readonly chatModel: string | undefined;
   private readonly visionModel: string | undefined;
-  private readonly timeout = 60_000;
+  private readonly timeout = 6000_000;
   private readonly visionTimeout = 120_000;
 
   constructor(

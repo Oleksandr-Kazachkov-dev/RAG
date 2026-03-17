@@ -29,7 +29,7 @@ let OllamaService = class OllamaService {
     constructor(configService, logger) {
         this.configService = configService;
         this.logger = logger;
-        this.timeout = 60_000;
+        this.timeout = 6000_000;
         this.visionTimeout = 120_000;
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
         this.baseURL = ragConfig?.ollamaBaseUrl || 'https://ollama.com';
