@@ -11,7 +11,7 @@ export type TRagConfig = {
     ollamaChatModel: string;
     ollamaVisionModel: string;
     qdrantUrl: string;
-    s3Endpoint: string;
+    s3Endpoint: string | undefined;
     s3AccessKey: string;
     s3SecretKey: string;
     s3BucketName: string;

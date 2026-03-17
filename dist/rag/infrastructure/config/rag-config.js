@@ -21,7 +21,7 @@ exports.ragConfig = (0, config_1.registerAs)(exports.RAG_CONFIG, () => {
         ollamaChatModel: OLLAMA_CHAT_MODEL || 'gemma3:4b',
         ollamaVisionModel: OLLAMA_VISION_MODEL || 'llama3.2-vision',
         qdrantUrl: QDRANT_URL || 'http://localhost:6333',
-        s3Endpoint: S3_ENDPOINT || 'http://localhost:9000',
+        s3Endpoint: S3_ENDPOINT,
         s3AccessKey: S3_ACCESS_KEY ?? '',
         s3SecretKey: S3_SECRET_KEY ?? '',
         s3BucketName: S3_BUCKET_NAME || 'rag-images',

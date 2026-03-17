@@ -25,11 +25,13 @@ let S3StorageService = class S3StorageService {
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
         this.bucketName = ragConfig?.s3BucketName || 'rag-images';
         this.publicUrl = ragConfig?.s3PublicUrl;
+        console.log('ragConfig :>> ', ragConfig);
         if (!ragConfig?.s3Endpoint ||
             !ragConfig?.s3AccessKey ||
             !ragConfig?.s3SecretKey) {
             this.logger.warn('S3 is disabled (no config provided)');
             this.isEnabled = false;
+            console.log('hre');
             return;
         }
         this.isEnabled = true;

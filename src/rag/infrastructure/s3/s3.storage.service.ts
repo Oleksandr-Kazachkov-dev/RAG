@@ -26,7 +26,8 @@ export class S3StorageService implements OnModuleInit {
     this.bucketName = ragConfig?.s3BucketName || 'rag-images';
     this.publicUrl = ragConfig?.s3PublicUrl;
 
-    // ✅ якщо немає конфіга — вимикаємо S3
+    console.log('ragConfig :>> ', ragConfig);
+
     if (
       !ragConfig?.s3Endpoint ||
       !ragConfig?.s3AccessKey ||
@@ -34,6 +35,8 @@ export class S3StorageService implements OnModuleInit {
     ) {
       this.logger.warn('S3 is disabled (no config provided)');
       this.isEnabled = false;
+      console.log('hre');
+      
       return;
     }
 

@@ -17,7 +17,7 @@ export type TRagConfig = {
 
   qdrantUrl: string;
 
-  s3Endpoint: string;
+  s3Endpoint: string | undefined;
   s3AccessKey: string;
   s3SecretKey: string;
   s3BucketName: string;
@@ -94,7 +94,7 @@ export const ragConfig = registerAs(RAG_CONFIG, (): TRagConfig => {
 
     qdrantUrl: QDRANT_URL || 'http://localhost:6333',
 
-    s3Endpoint: S3_ENDPOINT || 'http://localhost:9000',
+    s3Endpoint: S3_ENDPOINT,
     s3AccessKey: S3_ACCESS_KEY ?? '',
     s3SecretKey: S3_SECRET_KEY ?? '',
     s3BucketName: S3_BUCKET_NAME || 'rag-images',

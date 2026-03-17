@@ -10,7 +10,6 @@ import { Neo4jModule } from './infrastructure/neo4j/neo4j.module';
 import { QdrantTextDocumentRepository } from './infrastructure/qdrant/repositories/qdrant-text-document.repository';
 import { QdrantImageDocumentRepository } from './infrastructure/qdrant/repositories/qdrant-image-document.repository';
 import { Neo4jKnowledgeGraphService } from './infrastructure/neo4j/neo4j-knowledge-graph.service';
-import { OllamaService } from './infrastructure/ollama/ollama.service';
 import { TextRagService } from './application/services/text-rag.service';
 import { ImageRagService } from './application/services/image-rag.service';
 import { RagCommandBusModule } from './shared/infrastructure/command-bus.module';
