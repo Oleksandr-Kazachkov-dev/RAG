@@ -31,6 +31,7 @@ let RagQdrantService = class RagQdrantService {
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
         this.client = new js_client_rest_1.QdrantClient({
             url: ragConfig?.qdrantUrl || 'http://localhost:6333',
+            apiKey: ragConfig?.qdrantApiKey
         });
     }
     async ensureCollectionWithConfig(config) {

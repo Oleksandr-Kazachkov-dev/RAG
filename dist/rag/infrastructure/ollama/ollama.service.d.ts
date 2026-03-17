@@ -14,12 +14,14 @@ export declare class OllamaService {
     private readonly configService;
     private readonly logger;
     private readonly baseURL;
+    private readonly apiKey?;
     private readonly textEmbedModel;
     private readonly chatModel;
     private readonly visionModel;
     private readonly timeout;
     private readonly visionTimeout;
     constructor(configService: ConfigService, logger: LoggerPort);
+    private getHeaders;
     embed(prompt: string): Promise<number[] | null>;
     extractKeywords(text: string): Promise<string[]>;
     getRagResponseByPrompt(prompt: string, options?: LLMOptions): Promise<string>;

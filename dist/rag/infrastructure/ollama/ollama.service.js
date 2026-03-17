@@ -32,16 +32,32 @@ let OllamaService = class OllamaService {
         this.timeout = 60_000;
         this.visionTimeout = 120_000;
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
-        this.baseURL = ragConfig?.ollamaBaseUrl || 'http://127.0.0.1:11434';
-        this.textEmbedModel = ragConfig?.ollamaEmbedModelText || 'nomic-embed-text';
-        this.chatModel = ragConfig?.ollamaChatModel || 'gemma3:4b';
-        this.visionModel = ragConfig?.ollamaVisionModel || 'llama3.2-vision';
+        this.baseURL =
+            ragConfig?.ollamaBaseUrl || 'https://ollama.com';
+        this.apiKey = process.env.OLLAMA_API_KEY;
+        this.textEmbedModel =
+            ragConfig?.ollamaEmbedModelText || 'nomic-embed-text';
+        this.chatModel =
+            ragConfig?.ollamaChatModel || 'llama3';
+        this.visionModel =
+            ragConfig?.ollamaVisionModel || 'llama3';
+        if (!this.apiKey) {
+            this.logger.warn('OLLAMA_API_KEY is not set!');
+        }
+    }
+    getHeaders() {
+        return this.apiKey
+            ? { Authorization: `Bearer ${this.apiKey}` }
+            : {};
     }
     async embed(prompt) {
         try {
             const MAX_CHARS = 3000;
             const safePrompt = prompt.length > MAX_CHARS ? prompt.slice(0, MAX_CHARS) : prompt;
-            const response = await axios_1.default.post(`${this.baseURL}/api/embeddings`, { model: this.textEmbedModel, prompt: safePrompt }, { timeout: this.timeout });
+            const response = await axios_1.default.post(`${this.baseURL}/api/embeddings`, { model: this.textEmbedModel, prompt: safePrompt }, {
+                timeout: this.timeout,
+                headers: this.getHeaders(),
+            });
             const embedding = response.data?.embedding;
             if (!Array.isArray(embedding) || embedding.length === 0) {
                 this.logger.warn('Empty embedding, skipping chunk');
@@ -65,26 +81,26 @@ let OllamaService = class OllamaService {
                         role: 'system',
                         content: [
                             'You extract search keywords from text.',
-                            'Rules:',
-                            '- Return ONLY a JSON array of lowercase nouns like ["cat", "dog"]',
-                            '- 3–10 keywords max',
-                            '- No stopwords, no duplicates, use singular form',
-                            '- No explanations, no markdown, just the JSON array',
+                            'Return ONLY JSON array like ["cat","dog"]',
+                            '3–10 keywords max',
                         ].join('\n'),
                     },
                     { role: 'user', content: text },
                 ],
                 temperature: 0,
                 stream: false,
-            }, { timeout: this.timeout });
+            }, {
+                timeout: this.timeout,
+                headers: this.getHeaders(),
+            });
             const content = response.data?.message?.content;
             if (typeof content !== 'string') {
-                throw new Error('Invalid LLM response for keywords extraction');
+                throw new Error('Invalid LLM response');
             }
             return JSON.parse(content);
         }
         catch (error) {
-            this.logger.error('Failed to extract keywords:', error);
+            this.logger.error('Failed to extract keywords', error);
             throw error;
         }
     }
@@ -113,24 +129,20 @@ let OllamaService = class OllamaService {
                     delete requestBody.options[key];
                 }
             });
-            this.logger.log('LLM Request', {
-                model: this.chatModel,
-                promptLength: prompt.length,
-                options: requestBody.options,
+            const response = await axios_1.default.post(`${this.baseURL}/api/chat`, requestBody, {
+                timeout: this.timeout,
+                headers: this.getHeaders(),
             });
-            const response = await axios_1.default.post(`${this.baseURL}/api/chat`, requestBody, { timeout: this.timeout });
             if (!response.data?.message?.content) {
-                throw new Error('Invalid LLM response from Ollama');
+                throw new Error('Invalid LLM response');
             }
             return response.data.message.content;
         }
         catch (error) {
             this.logger.error('LLM request failed', {
                 error: this.getErrorMessage(error),
-                prompt: prompt.slice(0, 100),
-                options,
             });
-            throw new Error(`LLM request failed: ${this.getErrorMessage(error)}`);
+            throw new Error(`LLM failed: ${this.getErrorMessage(error)}`);
         }
     }
     async *getRagResponseByPromptStream(prompt, options = {}) {
@@ -139,53 +151,27 @@ let OllamaService = class OllamaService {
             messages.push({ role: 'system', content: options.systemPrompt });
         }
         messages.push({ role: 'user', content: prompt });
-        const requestBody = {
+        const response = await axios_1.default.post(`${this.baseURL}/api/chat`, {
             model: this.chatModel,
             messages,
             stream: true,
-            options: {
-                temperature: options.temperature ?? 0,
-                top_p: options.topP,
-                top_k: options.topK,
-                num_predict: options.maxTokens,
-                repeat_penalty: options.repeatPenalty,
-                seed: options.seed,
-            },
-        };
-        const llmOpts = requestBody.options;
-        Object.keys(llmOpts).forEach((k) => {
-            if (llmOpts[k] === undefined)
-                delete llmOpts[k];
+        }, {
+            responseType: 'stream',
+            timeout: this.timeout,
+            headers: this.getHeaders(),
         });
-        this.logger.log('LLM Stream Request', {
-            model: this.chatModel,
-            promptLength: prompt.length,
-            options: llmOpts,
-        });
-        const response = await axios_1.default.post(`${this.baseURL}/api/chat`, requestBody, { responseType: 'stream', timeout: this.timeout });
         let tail = '';
-        for await (const rawChunk of response.data) {
-            tail += rawChunk.toString('utf-8');
+        for await (const chunk of response.data) {
+            tail += chunk.toString();
             const lines = tail.split('\n');
             tail = lines.pop() ?? '';
             for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed)
+                if (!line.trim())
                     continue;
-                let parsed;
-                try {
-                    parsed = JSON.parse(trimmed);
+                const parsed = JSON.parse(line);
+                if (parsed.message?.content) {
+                    yield parsed.message.content;
                 }
-                catch {
-                    tail = trimmed + '\n' + tail;
-                    continue;
-                }
-                if (parsed.error) {
-                    throw new Error(`Ollama stream error: ${parsed.error}`);
-                }
-                const token = parsed.message?.content;
-                if (token)
-                    yield token;
                 if (parsed.done)
                     return;
             }
@@ -199,51 +185,44 @@ let OllamaService = class OllamaService {
                 messages: [
                     {
                         role: 'user',
-                        content: [
-                            'Describe this image in one short sentence.',
-                            'If it is an animal, include both type and breed (e.g., "Bulldog dog").',
-                            'If it is an event, describe it clearly (e.g., "Birthday party with balloons").',
-                            'Otherwise, describe the scene naturally and concisely.',
-                        ].join('\n'),
+                        content: 'Describe this image briefly.',
                         images: [base64],
                     },
                 ],
-                stream: false,
-            }, { timeout: this.visionTimeout });
-            const description = response.data?.message?.content;
-            if (typeof description !== 'string') {
-                throw new Error('Invalid LLM response for image description');
-            }
-            this.logger.log(`Image description: ${description}`);
-            return description;
+            }, {
+                timeout: this.visionTimeout,
+                headers: this.getHeaders(),
+            });
+            return response.data?.message?.content;
         }
         catch (error) {
-            this.logger.error(`Image detection failed`, {
+            this.logger.error('Image detection failed', {
                 error: this.getErrorMessage(error),
-                fileName: file.originalname,
             });
             throw new Error('Image detection failed');
         }
     }
     async healthCheck() {
         try {
-            const response = await axios_1.default.get(`${this.baseURL}/api/tags`, { timeout: 5000 });
-            return response.status === 200;
+            const res = await axios_1.default.get(`${this.baseURL}/api/tags`, {
+                timeout: 5000,
+                headers: this.getHeaders(),
+            });
+            return res.status === 200;
         }
-        catch (_error) {
+        catch {
             return false;
         }
     }
     async listModels() {
         try {
-            const response = await axios_1.default.get(`${this.baseURL}/api/tags`, { timeout: 5000 });
-            if (Array.isArray(response.data?.models)) {
-                return response.data.models.map((m) => m.name);
-            }
-            return [];
+            const res = await axios_1.default.get(`${this.baseURL}/api/tags`, {
+                timeout: 5000,
+                headers: this.getHeaders(),
+            });
+            return res.data?.models?.map((m) => m.name) || [];
         }
-        catch (error) {
-            this.logger.error('Failed to list models', { error: this.getErrorMessage(error) });
+        catch {
             return [];
         }
     }

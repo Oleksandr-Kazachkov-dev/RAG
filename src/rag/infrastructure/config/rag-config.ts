@@ -14,6 +14,7 @@ export type TRagConfig = {
   ollamaEmbedModelImage: string;
   ollamaChatModel: string;
   ollamaVisionModel: string;
+  ollamaApiKey: string | undefined;
 
   qdrantUrl: string;
   qdrantApiKey: string | undefined;
@@ -45,6 +46,7 @@ export const ragConfig = registerAs(RAG_CONFIG, (): TRagConfig => {
     OLLAMA_EMBED_MODEL_IMAGE,
     OLLAMA_CHAT_MODEL,
     OLLAMA_VISION_MODEL,
+    OLLAMA_API_KEY,
 
     QDRANT_URL,
     QDRANT_API_KEY,
@@ -92,10 +94,10 @@ export const ragConfig = registerAs(RAG_CONFIG, (): TRagConfig => {
     ollamaEmbedModelImage: OLLAMA_EMBED_MODEL_IMAGE || 'clip-text',
     ollamaChatModel: OLLAMA_CHAT_MODEL || 'gemma3:4b',
     ollamaVisionModel: OLLAMA_VISION_MODEL || 'llama3.2-vision',
+    ollamaApiKey: OLLAMA_API_KEY,
     
-
     qdrantUrl: QDRANT_URL || 'http://localhost:6333',
-    qdrantApiKey: QDRANT_API_KEY
+    qdrantApiKey: QDRANT_API_KEY,
 
     s3Endpoint: S3_ENDPOINT,
     s3AccessKey: S3_ACCESS_KEY ?? '',

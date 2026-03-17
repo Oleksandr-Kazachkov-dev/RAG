@@ -10,7 +10,9 @@ export type TRagConfig = {
     ollamaEmbedModelImage: string;
     ollamaChatModel: string;
     ollamaVisionModel: string;
+    ollamaApiKey: string | undefined;
     qdrantUrl: string;
+    qdrantApiKey: string | undefined;
     s3Endpoint: string | undefined;
     s3AccessKey: string;
     s3SecretKey: string;
