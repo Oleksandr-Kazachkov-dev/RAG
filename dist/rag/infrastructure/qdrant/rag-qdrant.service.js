@@ -29,8 +29,9 @@ let RagQdrantService = class RagQdrantService {
     constructor(configService) {
         this.configService = configService;
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
+        console.log('ragConfig?.qdrantUrl :>> ', ragConfig?.qdrantUrl);
         this.client = new js_client_rest_1.QdrantClient({
-            url: ragConfig?.qdrantUrl || 'http://localhost:6333',
+            url: ragConfig?.qdrantUrl || 'https://f5c19a2e-1c6f-49b3-abdd-2c77acc3ff42.eu-central-1-0.aws.cloud.qdrant.io',
             apiKey: ragConfig?.qdrantApiKey
         });
     }

@@ -331,7 +331,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
         const effectiveLimit = limit ?? options?.limit ?? ragConfig?.textRagDefaultLimit ?? 6;
         const { useHybridSearch, useReranking, rerankStrategy, useQueryTransformation, useContextualCompression, useConversationMemory, sessionId, scoreThreshold, _searchMode, } = options || {};
         const entityQuery = (0, transliteration_util_1.isEntityQuery)(query);
-        const collectionName = 'rag_text';
+        const collectionName = ragConfig?.textRagCollectionName || '';
         const searchMode = _searchMode ?? (entityQuery ? 'entity' : 'balanced');
         let keywords = [];
         let queriesToEmbed = [query];
@@ -528,7 +528,6 @@ let TextRagService = TextRagService_1 = class TextRagService {
         const filtered = configThreshold && applyConfigFilter
             ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
             : rawRetrieved;
-        console.log('filtered :>> ', filtered);
         const retrieved = p.useParentExpansion
             ? this.expandToParentContext(filtered)
             : filtered;

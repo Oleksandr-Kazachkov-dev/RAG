@@ -495,7 +495,7 @@ export class TextRagService implements TextRagPort {
     } = options || {};
 
     const entityQuery    = isEntityQuery(query);
-    const collectionName = 'rag_text';
+    const collectionName = ragConfig?.textRagCollectionName || '';
 
     const searchMode: SearchMode | 'entity' = _searchMode ?? (entityQuery ? 'entity' : 'balanced');
 
@@ -769,8 +769,6 @@ export class TextRagService implements TextRagPort {
       ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
       : rawRetrieved;
 
-    console.log('filtered :>> ', filtered);
-
     const retrieved = p.useParentExpansion
       ? this.expandToParentContext(filtered)
       : filtered;
@@ -1020,7 +1018,6 @@ export class TextRagService implements TextRagPort {
       yield { event: 'done', metadata: { relevantChunks: 0, citations: [] } };
       return;
     }
-
 
     const filtered = p.scoreThreshold
       ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)

@@ -178,8 +178,6 @@ export class OllamaService {
         },
       );
 
-      console.log('response :>> ', response);
-
       if (!response.data?.message?.content) {
         throw new Error('Invalid LLM response');
       }

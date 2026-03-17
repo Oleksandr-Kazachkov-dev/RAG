@@ -131,7 +131,6 @@ let OllamaService = class OllamaService {
                 timeout: this.timeout,
                 headers: this.getHeaders(),
             });
-            console.log('response :>> ', response);
             if (!response.data?.message?.content) {
                 throw new Error('Invalid LLM response');
             }
