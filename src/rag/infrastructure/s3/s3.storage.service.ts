@@ -26,6 +26,9 @@ export class S3StorageService implements OnModuleInit {
     this.publicUrl = ragConfig?.s3PublicUrl;
 
     const endpoint = ragConfig?.s3Endpoint || 'http://localhost:9000';
+    if (ragConfig?.s3Endpoint) {
+      return;
+    }
     const region = ragConfig?.s3Region || 'us-east-1';
     const useSsl = ragConfig?.s3UseSsl || false;
 
