@@ -4,9 +4,10 @@ import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
 export declare class S3StorageService implements OnModuleInit {
     private readonly configService;
     private readonly logger;
-    private readonly s3Client;
+    private s3Client;
     private readonly bucketName;
     private readonly publicUrl?;
+    private readonly isEnabled;
     constructor(configService: ConfigService, logger: LoggerPort);
     onModuleInit(): Promise<void>;
     private ensureBucketExists;

@@ -21,33 +21,37 @@ let S3StorageService = class S3StorageService {
     constructor(configService, logger) {
         this.configService = configService;
         this.logger = logger;
+        this.s3Client = null;
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
         this.bucketName = ragConfig?.s3BucketName || 'rag-images';
         this.publicUrl = ragConfig?.s3PublicUrl;
-        const endpoint = ragConfig?.s3Endpoint || 'http://localhost:9000';
-        const region = ragConfig?.s3Region || 'us-east-1';
-        const useSsl = ragConfig?.s3UseSsl || false;
-        if (!ragConfig?.s3AccessKey || !ragConfig?.s3SecretKey) {
-            throw new Error('S3_ACCESS_KEY and S3_SECRET_KEY must be set in environment variables. ' +
-                'Server startup aborted for security reasons. ' +
-                'Please configure these values in your .env file.');
+        if (!ragConfig?.s3Endpoint ||
+            !ragConfig?.s3AccessKey ||
+            !ragConfig?.s3SecretKey) {
+            this.logger.warn('S3 is disabled (no config provided)');
+            this.isEnabled = false;
+            return;
         }
+        this.isEnabled = true;
         this.s3Client = new client_s3_1.S3Client({
-            endpoint,
-            region,
+            endpoint: ragConfig.s3Endpoint,
+            region: ragConfig.s3Region || 'us-east-1',
             forcePathStyle: true,
             credentials: {
                 accessKeyId: ragConfig.s3AccessKey,
                 secretAccessKey: ragConfig.s3SecretKey,
             },
-            ...(useSsl ? {} : { tls: false }),
         });
     }
     async onModuleInit() {
+        if (!this.isEnabled || !this.s3Client)
+            return;
         await this.ensureBucketExists();
         this.logger.log(`S3 bucket "${this.bucketName}" is ready`);
     }
     async ensureBucketExists() {
+        if (!this.s3Client)
+            return;
         try {
             await this.s3Client.send(new client_s3_1.HeadBucketCommand({ Bucket: this.bucketName }));
         }
@@ -63,15 +67,25 @@ let S3StorageService = class S3StorageService {
         }
     }
     async uploadFile(key, buffer, contentType) {
+        if (!this.isEnabled || !this.s3Client) {
+            this.logger.warn('S3 upload skipped (disabled)');
+            return '';
+        }
         await this.s3Client.send(new client_s3_1.PutObjectCommand({
             Bucket: this.bucketName,
             Key: key,
             Body: buffer,
             ContentType: contentType,
         }));
-        return `${this.publicUrl}/${this.bucketName}/${key}`;
+        return this.publicUrl
+            ? `${this.publicUrl}/${this.bucketName}/${key}`
+            : key;
     }
     async deleteFile(key) {
+        if (!this.isEnabled || !this.s3Client) {
+            this.logger.warn('S3 delete skipped (disabled)');
+            return;
+        }
         await this.s3Client.send(new client_s3_1.DeleteObjectCommand({
             Bucket: this.bucketName,
             Key: key,
