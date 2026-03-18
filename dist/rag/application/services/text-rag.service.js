@@ -428,7 +428,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
             results = reranked.map(r => ({ id: r.item.id, text: r.item.text, score: r.finalScore }));
         }
         results = results.slice(0, effectiveLimit);
-        if (searchMode === 'entity') {
+        if (searchMode === 'entity' || searchMode === 'wide') {
             const nameTokenGroups = this.extractNameTokens(query);
             if (nameTokenGroups.length > 0) {
                 const chunkMatches = (text, groups) => {
@@ -528,9 +528,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
         const filtered = configThreshold && applyConfigFilter
             ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
             : rawRetrieved;
-        const retrieved = p.useParentExpansion
-            ? this.expandToParentContext(filtered)
-            : filtered;
+        const retrieved = this.expandToParentContext(filtered);
         const useKG = options?.useKnowledgeGraph ?? p.useKnowledgeGraph;
         let kgContext;
         if (useKG)

@@ -43,8 +43,8 @@ const PROFILE_BY_TYPE = {
         seed: undefined,
     },
     wide: {
-        limit: 27,
-        scoreThreshold: 0.3,
+        limit: 6,
+        scoreThreshold: 0.7,
         searchMode: 'wide',
         useHybridSearch: true,
         useQueryTransformation: true,

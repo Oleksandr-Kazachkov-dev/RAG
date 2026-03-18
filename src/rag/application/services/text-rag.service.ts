@@ -625,7 +625,7 @@ export class TextRagService implements TextRagPort {
     }
 
     results = results.slice(0, effectiveLimit);
-    if (searchMode === 'entity') {
+    if (searchMode === 'entity' || searchMode === 'wide') {
       const nameTokenGroups = this.extractNameTokens(query);
       if (nameTokenGroups.length > 0) {
 
@@ -769,9 +769,7 @@ export class TextRagService implements TextRagPort {
       ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
       : rawRetrieved;
 
-    const retrieved = p.useParentExpansion
-      ? this.expandToParentContext(filtered)
-      : filtered;
+    const retrieved = this.expandToParentContext(filtered)
 
     const useKG = options?.useKnowledgeGraph ?? p.useKnowledgeGraph;
     let kgContext: string | undefined;

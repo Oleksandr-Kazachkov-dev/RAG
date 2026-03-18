@@ -129,7 +129,6 @@ const SYNONYM_MAP: Record<string, string[]> = {
   'розкаж':        ['розповісти', 'опис', 'інформація', 'tell me about'],
   'historі':       ['history', 'назва компанії', 'заснування', 'origin'],
 
-  'відділ':        ['department', 'team', 'dept'],
   'департамент':   ['department', 'division'],
   'команда':       ['team', 'group'],
   'team':          ['команда', 'відділ'],
