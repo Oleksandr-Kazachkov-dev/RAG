@@ -48,6 +48,7 @@ const console_logger_adapter_1 = require("./shared/application/ports/console.log
 const ollama_chat_adapter_1 = require("./infrastructure/ollama/ollama-chat.adapter");
 const ollama_embedding_adapter_1 = require("./infrastructure/ollama/ollama-embedding.adapter");
 const confidence_service_1 = require("./application/services/confidence.service");
+const chat_controller_1 = require("./presentation/controllers/chat.controller");
 let RagModule = class RagModule {
     constructor(bus, askQuestion, uploadKnowledge, deleteDocument, processImages, deleteImage, uploadFolder, getAllDocuments, getAllImages, getImagesByKeyword, retrieveDocuments) {
         this.bus = bus;
@@ -110,7 +111,11 @@ exports.RagModule = RagModule = __decorate([
             rag_query_handlers_1.GetImagesByKeywordHandler,
             rag_query_handlers_1.RetrieveDocumentsHandler,
         ],
-        controllers: [rag_documents_controller_1.RagDocumentsController, image_controller_1.RagImagesController],
+        controllers: [
+            rag_documents_controller_1.RagDocumentsController,
+            image_controller_1.RagImagesController,
+            chat_controller_1.ChatController
+        ],
     }),
     __param(0, (0, common_1.Inject)('CommandBus')),
     __metadata("design:paramtypes", [Object, ask_question_handler_1.AskQuestionHandler,

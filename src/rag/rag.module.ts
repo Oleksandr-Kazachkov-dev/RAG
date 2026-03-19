@@ -44,6 +44,7 @@ import { ConsoleLoggerAdapter } from './shared/application/ports/console.logger.
 import { OllamaChatAdapter } from './infrastructure/ollama/ollama-chat.adapter';
 import { OllamaEmbeddingAdapter } from './infrastructure/ollama/ollama-embedding.adapter';
 import { ConfidenceService } from './application/services/confidence.service';
+import { ChatController } from './presentation/controllers/chat.controller';
 
 @Module({
   imports: [
@@ -78,7 +79,11 @@ import { ConfidenceService } from './application/services/confidence.service';
     GetImagesByKeywordHandler,
     RetrieveDocumentsHandler,
   ],
-  controllers: [RagDocumentsController, RagImagesController],
+  controllers: [
+    RagDocumentsController, 
+    RagImagesController, 
+    ChatController
+  ],
 })
 export class RagModule implements OnModuleInit {
   constructor(
