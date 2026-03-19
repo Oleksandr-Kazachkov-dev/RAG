@@ -9,7 +9,7 @@ export type SearchMode = 'precise' | 'wide' | 'balanced';
 
 const EF_BY_MODE: Record<SearchMode, number> = {
   precise:  512,
-  balanced: 128,
+  balanced: 256,
   wide:     64,
 };
 

@@ -1074,6 +1074,7 @@ export class TextRagService implements TextRagPort {
     const context = retrieved
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       .map(doc => doc.text)
+      .slice(0, 8)
       .join('\n\n');
 
     let prompt = this.buildPrompt(classification.type, context, query);

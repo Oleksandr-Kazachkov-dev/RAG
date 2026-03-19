@@ -17,7 +17,7 @@ const qdrant_collection_config_mapper_1 = require("./mappers/qdrant-collection-c
 const rag_config_1 = require("../config/rag-config");
 const EF_BY_MODE = {
     precise: 512,
-    balanced: 128,
+    balanced: 256,
     wide: 64,
 };
 const DEFAULT_SCORE_THRESHOLD_BY_MODE = {

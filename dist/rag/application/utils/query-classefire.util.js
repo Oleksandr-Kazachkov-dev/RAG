@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.QueryClassifier = void 0;
 const PROFILE_BY_TYPE = {
     entity: {
-        limit: 10,
+        limit: 16,
         scoreThreshold: 0.5,
         searchMode: 'entity',
         useHybridSearch: true,
@@ -16,8 +16,8 @@ const PROFILE_BY_TYPE = {
         useConversationMemory: false,
         useCitationTracking: true,
         temperature: 0,
-        topP: undefined,
-        topK: undefined,
+        topP: 1,
+        topK: 5,
         maxTokens: 10000,
         repeatPenalty: undefined,
         seed: undefined,
