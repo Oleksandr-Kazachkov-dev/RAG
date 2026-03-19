@@ -196,45 +196,79 @@ export class OllamaService {
     options: LLMOptions = {},
   ): AsyncGenerator<string> {
     const messages: Array<{ role: string; content: string }> = [];
-
+  
     if (options.systemPrompt) {
       messages.push({ role: 'system', content: options.systemPrompt });
     }
-
+  
     messages.push({ role: 'user', content: prompt });
-
-    const response = await axios.post(
-      `${this.baseURL}/api/chat`,
-      {
-        model: this.chatModel,
-        messages,
-        stream: true,
+  
+    const requestBody: Record<string, any> = {
+      model: this.chatModel,
+      messages,
+      stream: true,
+      options: {
+        temperature:    options.temperature ?? 0,
+        top_p:          options.topP,
+        top_k:          options.topK,
+        num_predict:    options.maxTokens,
+        repeat_penalty: options.repeatPenalty,
+        seed:           options.seed,
       },
-      {
-        responseType: 'stream',
-        timeout: this.timeout,
-        headers: this.getHeaders(),
-      },
-    );
-
+    };
+  
+    // Видаляємо undefined поля
+    Object.keys(requestBody.options).forEach(key => {
+      if (requestBody.options[key] === undefined) {
+        delete requestBody.options[key];
+      }
+    });
+  
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (this.apiKey) {
+      headers['Authorization'] = `Bearer ${this.apiKey}`;
+    }
+  
+    // Використовуємо нативний fetch замість axios —
+    // axios буферизує chunks, fetch читає байт за байтом
+    const response = await fetch(`${this.baseURL}/api/chat`, {
+      method:  'POST',
+      headers,
+      body:    JSON.stringify(requestBody),
+      // @ts-ignore — Node 18+ підтримує
+      signal:  AbortSignal.timeout(this.timeout),
+    });
+  
+    if (!response.ok || !response.body) {
+      throw new Error(`Ollama HTTP ${response.status}`);
+    }
+  
+    const reader  = response.body.getReader();
+    const decoder = new TextDecoder();
     let tail = '';
-
-    for await (const chunk of response.data as AsyncIterable<Buffer>) {
-      tail += chunk.toString();
-
+  
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+  
+      tail += decoder.decode(value, { stream: true });
+  
       const lines = tail.split('\n');
       tail = lines.pop() ?? '';
-
+  
       for (const line of lines) {
         if (!line.trim()) continue;
-
-        const parsed = JSON.parse(line);
-
-        if (parsed.message?.content) {
-          yield parsed.message.content;
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed.message?.content) {
+            yield parsed.message.content;
+          }
+          if (parsed.done) return;
+        } catch {
+          // неповний JSON — пропускаємо
         }
-
-        if (parsed.done) return;
       }
     }
   }

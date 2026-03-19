@@ -7,8 +7,7 @@ class ContextualCompressor {
     }
     async compressContext(query, documents, options = {}) {
         const { maxTokens = 500, method = 'extractive' } = options;
-        const compressed = await Promise.all(documents.map((doc) => this.compressSingleDocument(query, doc.text, maxTokens, method)));
-        return compressed;
+        return Promise.all(documents.map((doc) => this.compressSingleDocument(query, doc.text, maxTokens, method)));
     }
     async compressSingleDocument(query, text, maxTokens, method) {
         switch (method) {
@@ -23,41 +22,49 @@ class ContextualCompressor {
     async extractiveCompression(query, text, maxTokens) {
         const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
         if (sentences.length === 0) {
-            return {
-                original: text,
-                compressed: '',
-                relevantSentences: [],
-                compressionRatio: 0,
-            };
+            return { original: text, compressed: '', relevantSentences: [], compressionRatio: 0 };
         }
-        const [queryEmbedding, ...sentenceEmbeddings] = await Promise.all([
+        const queryWords = new Set(query
+            .toLowerCase()
+            .split(/\s+/)
+            .map((w) => w.replace(/[^a-zа-яіїєґ]/gi, ''))
+            .filter((w) => w.length > 2));
+        const prescored = sentences
+            .map((s) => {
+            const words = s.toLowerCase().split(/\s+/);
+            const tf = words.filter((w) => queryWords.has(w.replace(/[^a-zа-яіїєґ]/gi, ''))).length;
+            return { s, tf };
+        })
+            .sort((a, b) => b.tf - a.tf)
+            .slice(0, 15)
+            .map((x) => x.s);
+        const [queryEmbedding, ...candEmbeddings] = await Promise.all([
             this.ollamaService.embed(query),
-            ...sentences.map((s) => this.ollamaService.embed(s.trim())),
+            ...prescored.map((s) => this.ollamaService.embed(s.trim())),
         ]);
-        const scoredSentences = sentences.map((sentence, idx) => ({
-            sentence: sentence.trim(),
-            score: this.cosineSimilarity(queryEmbedding, sentenceEmbeddings[idx]),
-        }));
-        const sortedSentences = scoredSentences
+        const reranked = prescored
+            .map((s, i) => ({
+            s,
+            score: queryEmbedding && candEmbeddings[i]
+                ? this.cosineSimilarity(queryEmbedding, candEmbeddings[i])
+                : 0,
+        }))
             .sort((a, b) => b.score - a.score);
         const relevantSentences = [];
-        let tokenCount = 0;
-        for (const { sentence } of sortedSentences) {
-            const estimatedTokens = sentence.split(/\s+/).length;
-            if (tokenCount + estimatedTokens <= maxTokens) {
-                relevantSentences.push(sentence);
-                tokenCount += estimatedTokens;
-            }
-            else {
+        let wordCount = 0;
+        for (const { s } of reranked) {
+            const wc = s.split(/\s+/).length;
+            if (wordCount + wc > maxTokens)
                 break;
-            }
+            relevantSentences.push(s);
+            wordCount += wc;
         }
         const compressed = relevantSentences.join(' ');
         return {
             original: text,
             compressed,
             relevantSentences,
-            compressionRatio: compressed.length / text.length,
+            compressionRatio: text.length > 0 ? compressed.length / text.length : 0,
         };
     }
     async abstractiveCompression(query, text, maxTokens) {
@@ -83,8 +90,7 @@ class ContextualCompressor {
     async hybridCompression(query, text, maxTokens) {
         const extractive = await this.extractiveCompression(query, text, Math.floor(maxTokens * 1.5));
         if (extractive.compressed.length > maxTokens * 4) {
-            const abstractive = await this.abstractiveCompression(query, extractive.compressed, maxTokens);
-            return abstractive;
+            return this.abstractiveCompression(query, extractive.compressed, maxTokens);
         }
         return extractive;
     }
@@ -99,7 +105,8 @@ class ContextualCompressor {
             normA += a[i] * a[i];
             normB += b[i] * b[i];
         }
-        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        const denom = Math.sqrt(normA) * Math.sqrt(normB);
+        return denom === 0 ? 0 : dotProduct / denom;
     }
 }
 exports.ContextualCompressor = ContextualCompressor;

@@ -16,9 +16,9 @@ const js_client_rest_1 = require("@qdrant/js-client-rest");
 const qdrant_collection_config_mapper_1 = require("./mappers/qdrant-collection-config.mapper");
 const rag_config_1 = require("../config/rag-config");
 const EF_BY_MODE = {
-    precise: 256,
-    balanced: 256,
-    wide: 256,
+    precise: 512,
+    balanced: 128,
+    wide: 64,
 };
 const DEFAULT_SCORE_THRESHOLD_BY_MODE = {
     precise: 0.75,
@@ -31,7 +31,7 @@ let RagQdrantService = class RagQdrantService {
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
         this.client = new js_client_rest_1.QdrantClient({
             url: ragConfig?.qdrantUrl,
-            apiKey: ragConfig?.qdrantApiKey
+            apiKey: ragConfig?.qdrantApiKey,
         });
     }
     async ensureCollectionWithConfig(config) {
@@ -75,6 +75,7 @@ let RagQdrantService = class RagQdrantService {
             limit: params.limit,
             filter: params.filter,
             score_threshold: scoreThreshold,
+            with_vector: params.with_vector ?? false,
             params: {
                 hnsw_ef: ef,
                 exact: false,
@@ -85,6 +86,7 @@ let RagQdrantService = class RagQdrantService {
     async scroll(collectionName, params) {
         return this.client.scroll(collectionName, {
             limit: params.limit,
+            offset: params.offset,
             filter: params.filter,
             with_payload: params.with_payload ?? true,
             with_vector: false,

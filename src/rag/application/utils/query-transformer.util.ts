@@ -155,7 +155,7 @@ const SYNONYM_MAP: Record<string, string[]> = {
   'typescript':    ['ts', 'javascript'],
   'розробник':     ['developer', 'programmer', 'engineer'],
   'developer':     ['розробник', 'програміст'],
-  'grow':          ['Employee growth process']
+  'grow':          ['Employee growth process'],
 };
 
 function expandWithSynonyms(query: string): string[] {
@@ -207,7 +207,7 @@ export class QueryTransformer {
 
     const [expanded, rephrased, keywords] = await Promise.all([
       this.expandQuery(query, entity),
-      this.rephraseQuery(query),
+      this.rephraseQuery(query, entity),
       this.extractKeywords(query, entity),
     ]);
 
@@ -261,7 +261,12 @@ export class QueryTransformer {
     }
   }
 
-  private async rephraseQuery(query: string): Promise<string[]> {
+  private async rephraseQuery(query: string, isEntity: boolean): Promise<string[]> {
+    if (isEntity) return [];
+
+    const tokenCount = query.trim().split(/\s+/).length;
+    if (tokenCount <= 4) return [];
+
     const prompt =
       `Rephrase this question in 2 different ways while keeping the same meaning: "${query}"\n\n` +
       `Provide only the rephrased questions, one per line, no numbers.`;

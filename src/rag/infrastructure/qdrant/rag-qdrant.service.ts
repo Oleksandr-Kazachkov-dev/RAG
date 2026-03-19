@@ -8,15 +8,15 @@ import { TRagConfig, RAG_CONFIG } from '../config/rag-config';
 export type SearchMode = 'precise' | 'wide' | 'balanced';
 
 const EF_BY_MODE: Record<SearchMode, number> = {
-  precise: 256,
-  balanced: 256,
-  wide: 256,
+  precise:  512,
+  balanced: 128,
+  wide:     64,
 };
 
 const DEFAULT_SCORE_THRESHOLD_BY_MODE: Record<SearchMode, number> = {
-  precise: 0.75,
+  precise:  0.75,
   balanced: 0.65,
-  wide: 0.50,
+  wide:     0.50,
 };
 
 @Injectable()
@@ -27,7 +27,7 @@ export class RagQdrantService {
     const ragConfig = this.configService.get<TRagConfig>(RAG_CONFIG);
     this.client = new QdrantClient({
       url: ragConfig?.qdrantUrl,
-      apiKey: ragConfig?.qdrantApiKey
+      apiKey: ragConfig?.qdrantApiKey,
     });
   }
 
@@ -78,6 +78,7 @@ export class RagQdrantService {
       score_threshold?: number | null;
       params?: Record<string, unknown>;
       searchMode?: SearchMode;
+      with_vector?: boolean;
     },
   ): Promise<Array<Schemas['ScoredPoint']>> {
     const mode: SearchMode = params.searchMode ?? 'balanced';
@@ -95,6 +96,7 @@ export class RagQdrantService {
       limit: params.limit,
       filter: params.filter as any,
       score_threshold: scoreThreshold,
+      with_vector: params.with_vector ?? false,
       params: {
         hnsw_ef: ef,
         exact: false,
@@ -105,10 +107,16 @@ export class RagQdrantService {
 
   async scroll(
     collectionName: string,
-    params: { limit: number; filter?: unknown; with_payload?: boolean },
+    params: {
+      limit: number;
+      offset?: string | number;
+      filter?: unknown;
+      with_payload?: boolean;
+    },
   ): Promise<Schemas['ScrollResult']> {
     return this.client.scroll(collectionName, {
       limit: params.limit,
+      offset: params.offset,
       filter: params.filter,
       with_payload: params.with_payload ?? true,
       with_vector: false,

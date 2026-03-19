@@ -52,54 +52,37 @@ export interface IGenerateAnswer {
 
 export interface IUploadKnowledge {
   chunks: number;
-  metadata?: Record<string, any>; 
+  metadata?: Record<string, any>;
 }
 
 export interface IDeleteDocument {
   deletedDocumentId: string;
 }
 
-// ---------------------------------------------------------------------------
-// Streaming
-// ---------------------------------------------------------------------------
-
-/**
- * Discriminated union emitted by `streamableGenerateAnswer`.
- *
- * Events arrive in this order:
- *   metadata → (sources?) → token* → (citations?) → done
- *
- * On any unrecoverable failure an `error` event is yielded instead and the
- * generator terminates.
- */
 export type IStreamChunk =
   | {
       event: 'metadata';
-      /**
-       * Emitted before the first token.
-       * Carries query classification + generation params.
-       * May also include relevantChunks / citations on early-exit paths.
-       */
       metadata: Partial<Omit<IGenerateAnswer, 'answer' | 'formattedAnswer' | 'sources'>>;
     }
   | {
       event: 'sources';
-      /** Retrieved source documents (only when `includeSources: true`). */
       sources: NonNullable<IGenerateAnswer['sources']>;
     }
   | {
       event: 'token';
-      /** A single partial LLM token. */
       token: string;
     }
   | {
       event: 'citations';
-      /** Citation list built after all tokens have been collected. */
       citations: ICitation[];
     }
   | {
+      event: 'correction';
+      correctedAnswer: string;
+      reason: 'hallucination';
+    }
+  | {
       event: 'done';
-      /** Final snapshot — relevantChunks, confidence, knowledgeGraphContext … */
       metadata: Partial<Omit<IGenerateAnswer, 'answer' | 'formattedAnswer' | 'sources'>>;
     }
   | {

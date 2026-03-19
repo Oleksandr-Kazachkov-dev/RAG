@@ -16,9 +16,11 @@ export declare class RagQdrantService {
         score_threshold?: number | null;
         params?: Record<string, unknown>;
         searchMode?: SearchMode;
+        with_vector?: boolean;
     }): Promise<Array<Schemas['ScoredPoint']>>;
     scroll(collectionName: string, params: {
         limit: number;
+        offset?: string | number;
         filter?: unknown;
         with_payload?: boolean;
     }): Promise<Schemas['ScrollResult']>;

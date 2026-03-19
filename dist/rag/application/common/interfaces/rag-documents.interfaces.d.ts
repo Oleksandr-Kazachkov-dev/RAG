@@ -66,6 +66,10 @@ export type IStreamChunk = {
     event: 'citations';
     citations: ICitation[];
 } | {
+    event: 'correction';
+    correctedAnswer: string;
+    reason: 'hallucination';
+} | {
     event: 'done';
     metadata: Partial<Omit<IGenerateAnswer, 'answer' | 'formattedAnswer' | 'sources'>>;
 } | {

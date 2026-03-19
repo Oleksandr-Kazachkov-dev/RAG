@@ -20,13 +20,11 @@ export class ContextualCompressor {
   ): Promise<CompressedContext[]> {
     const { maxTokens = 500, method = 'extractive' } = options;
 
-    const compressed = await Promise.all(
+    return Promise.all(
       documents.map((doc) =>
         this.compressSingleDocument(query, doc.text, maxTokens, method),
       ),
     );
-
-    return compressed;
   }
 
   private async compressSingleDocument(
@@ -51,52 +49,61 @@ export class ContextualCompressor {
     maxTokens: number,
   ): Promise<CompressedContext> {
     const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-    
+
     if (sentences.length === 0) {
-      return {
-        original: text,
-        compressed: '',
-        relevantSentences: [],
-        compressionRatio: 0,
-      };
+      return { original: text, compressed: '', relevantSentences: [], compressionRatio: 0 };
     }
 
-    const [queryEmbedding, ...sentenceEmbeddings] = await Promise.all([
+    const queryWords = new Set(
+      query
+        .toLowerCase()
+        .split(/\s+/)
+        .map((w) => w.replace(/[^a-zа-яіїєґ]/gi, ''))
+        .filter((w) => w.length > 2),
+    );
+
+    const prescored = sentences
+      .map((s) => {
+        const words = s.toLowerCase().split(/\s+/);
+        const tf = words.filter((w) =>
+          queryWords.has(w.replace(/[^a-zа-яіїєґ]/gi, '')),
+        ).length;
+        return { s, tf };
+      })
+      .sort((a, b) => b.tf - a.tf)
+      .slice(0, 15)
+      .map((x) => x.s);
+
+    const [queryEmbedding, ...candEmbeddings] = await Promise.all([
       this.ollamaService.embed(query),
-      ...sentences.map((s) => this.ollamaService.embed(s.trim())),
+      ...prescored.map((s) => this.ollamaService.embed(s.trim())),
     ]);
 
-    const scoredSentences = sentences.map((sentence, idx) => ({
-      sentence: sentence.trim(),
-      score: this.cosineSimilarity(
-        queryEmbedding!,
-        sentenceEmbeddings[idx]!,
-      ),
-    }));
-
-    const sortedSentences = scoredSentences
+    const reranked = prescored
+      .map((s, i) => ({
+        s,
+        score:
+          queryEmbedding && candEmbeddings[i]
+            ? this.cosineSimilarity(queryEmbedding, candEmbeddings[i]!)
+            : 0,
+      }))
       .sort((a, b) => b.score - a.score);
 
     const relevantSentences: string[] = [];
-    let tokenCount = 0;
-
-    for (const { sentence } of sortedSentences) {
-      const estimatedTokens = sentence.split(/\s+/).length;
-      if (tokenCount + estimatedTokens <= maxTokens) {
-        relevantSentences.push(sentence);
-        tokenCount += estimatedTokens;
-      } else {
-        break;
-      }
+    let wordCount = 0;
+    for (const { s } of reranked) {
+      const wc = s.split(/\s+/).length;
+      if (wordCount + wc > maxTokens) break;
+      relevantSentences.push(s);
+      wordCount += wc;
     }
 
     const compressed = relevantSentences.join(' ');
-
     return {
       original: text,
       compressed,
       relevantSentences,
-      compressionRatio: compressed.length / text.length,
+      compressionRatio: text.length > 0 ? compressed.length / text.length : 0,
     };
   }
 
@@ -140,12 +147,7 @@ export class ContextualCompressor {
     );
 
     if (extractive.compressed.length > maxTokens * 4) {
-      const abstractive = await this.abstractiveCompression(
-        query,
-        extractive.compressed,
-        maxTokens,
-      );
-      return abstractive;
+      return this.abstractiveCompression(query, extractive.compressed, maxTokens);
     }
 
     return extractive;
@@ -153,17 +155,18 @@ export class ContextualCompressor {
 
   private cosineSimilarity(a: number[], b: number[]): number {
     if (a.length !== b.length) return 0;
-    
+
     let dotProduct = 0;
     let normA = 0;
     let normB = 0;
-    
+
     for (let i = 0; i < a.length; i++) {
       dotProduct += a[i] * b[i];
       normA += a[i] * a[i];
       normB += b[i] * b[i];
     }
-    
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+
+    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+    return denom === 0 ? 0 : dotProduct / denom;
   }
 }

@@ -10,6 +10,7 @@ export interface HybridSearchResult {
   vectorScore: number;
   keywordScore: number;
   hybridScore: number;
+  vector?: number[];
 }
 
 interface ModeConfig {
@@ -106,13 +107,12 @@ export class HybridSearchEngine {
     const minTextLength   = options.minTextLength ?? 80;
     const fetchLimit      = limit * cfg.fetchMultiplier;
 
-    const qdrantScoreThreshold = null;
-
     const vectorResults = await this.qdrantService.search(collectionName, {
       vector:          queryEmbedding.values,
       limit:           fetchLimit,
       searchMode:      qdrantMode,
-      score_threshold: qdrantScoreThreshold,
+      score_threshold: null,
+      with_vector:     true,
     });
 
     const useKeywordScroll = (mode === 'entity' || mode === 'balanced' || mode === 'wide') && keywords.length > 0;
@@ -150,6 +150,7 @@ export class HybridSearchEngine {
       vectorScore:  r.score ?? 0,
       keywordScore: 0,
       hybridScore:  0,
+      vector:       Array.isArray(r.vector) ? (r.vector as number[]) : undefined,
     }));
 
     const scrollUnified: HybridSearchResult[] = keywordScrollPoints

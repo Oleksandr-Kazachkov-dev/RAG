@@ -59,7 +59,9 @@ let RagDocumentsController = class RagDocumentsController {
         res.setHeader('Cache-Control', 'no-cache, no-transform');
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no');
+        res.setHeader('Content-Encoding', 'none');
         res.flushHeaders();
+        res.socket?.setNoDelay(true);
         const command = new ask_question_command_1.AskQuestionCommand(dto.question, {
             limit: dto.limit,
             scoreThreshold: dto.scoreThreshold,
@@ -81,6 +83,7 @@ let RagDocumentsController = class RagDocumentsController {
         });
         const writeChunk = (chunk, eventName) => {
             res.write(`event: ${eventName}\ndata: ${JSON.stringify(chunk)}\n\n`);
+            res.flush?.();
         };
         try {
             for await (const chunk of this.askQuestionHandler.streamableExecute(command)) {

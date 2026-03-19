@@ -10,6 +10,7 @@ import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
 import { IConversationSessionRepository } from 'src/rag/domain/ports/conversation-session.repository.port';
 import { AskQuestionOptions } from '../commands/ask-question.command';
 import { SearchMode } from '../../infrastructure/qdrant/rag-qdrant.service';
+import { IConfidencePort } from '../../domain/ports/confidence.port';
 interface RetrieveInternalOptions extends Pick<AskQuestionOptions, 'useHybridSearch' | 'useReranking' | 'rerankStrategy' | 'useQueryTransformation' | 'useContextualCompression' | 'useConversationMemory' | 'sessionId' | 'scoreThreshold' | 'filters'> {
     limit?: number;
     _searchMode?: SearchMode | 'entity';
@@ -22,14 +23,13 @@ export declare class TextRagService implements TextRagPort {
     private readonly conversationRepository;
     private readonly knowledgeGraph;
     private readonly logger;
+    private readonly confidencePort;
     private queryTransformer;
     private reranker;
     private hybridSearch;
     private contextualCompressor;
     private queryClassifier;
-    private static readonly CYRILLIC_TO_LATIN;
-    constructor(configService: ConfigService, ollama: OllamaService, qdrantService: RagQdrantService, textRepository: ITextDocumentRepository, conversationRepository: IConversationSessionRepository, knowledgeGraph: IKnowledgeGraphService, logger: LoggerPort);
-    private cyrillicToLatin;
+    constructor(configService: ConfigService, ollama: OllamaService, qdrantService: RagQdrantService, textRepository: ITextDocumentRepository, conversationRepository: IConversationSessionRepository, knowledgeGraph: IKnowledgeGraphService, logger: LoggerPort, confidencePort: IConfidencePort);
     uploadKnowledgeFromFile(file: Express.Multer.File, options?: UploadFolderOptions): Promise<IUploadKnowledge>;
     uploadMarkdownFolder(files: Express.Multer.File[], options?: UploadFolderOptions): Promise<{
         totalChunks: number;
@@ -51,6 +51,7 @@ export declare class TextRagService implements TextRagPort {
     private buildFileId;
     retrieve(query: string, limit?: number, options?: RetrieveInternalOptions): Promise<Array<IDocumentWithEmbedding> | string>;
     getAllDocuments(): Promise<IDocumentWithoutEmbedding[]>;
+    private buildPrompt;
     generateAnswer(query: string, options?: {
         limit?: number;
         scoreThreshold?: number;

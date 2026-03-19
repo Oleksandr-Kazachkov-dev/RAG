@@ -9,6 +9,7 @@ export interface HybridSearchResult {
     vectorScore: number;
     keywordScore: number;
     hybridScore: number;
+    vector?: number[];
 }
 export declare class HybridSearchEngine {
     private readonly qdrantService;

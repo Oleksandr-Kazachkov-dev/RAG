@@ -21,8 +21,8 @@ export class QdrantTextDocumentRepository
     @Inject('LoggerPort') private readonly logger: LoggerPort,
   ) {
     const ragConfig = this.configService.get<TRagConfig>(RAG_CONFIG);
-    const vectorSize   = ragConfig?.textRagVectorSize || 768;
-    const hnswConfig   = ragConfig?.textRagHnswConfig;
+    const vectorSize = ragConfig?.textRagVectorSize || 768;
+    const hnswConfig = ragConfig?.textRagHnswConfig;
 
     this.collectionConfig = new CollectionConfig(
       ragConfig?.textRagCollectionName || 'rag_text',
@@ -127,7 +127,6 @@ export class QdrantTextDocumentRepository
       filter?: object;
     },
   ): Promise<TextDocument[]> {
-
     const filter = this.buildFilter(options?.onlyChildren, options?.filter);
 
     const results = await this.qdrant.search(this.collectionConfig.name, {
@@ -151,23 +150,33 @@ export class QdrantTextDocumentRepository
   }
 
   async findAll(limit = 1_000): Promise<TextDocument[]> {
-    const results = await this.qdrant.scroll(this.collectionConfig.name, { limit });
-    const points  = results.points || [];
+    const { documents } = await this.findAllPaginated(limit);
+    return documents;
+  }
 
-    if (points.length === limit) {
-      this.logger.warn(
-        `[QDRANT] findAll() hit limit=${limit}. Consider cursor-based pagination via next_page_offset.`,
-      );
-    }
+  async findAllPaginated(
+    limit = 100,
+    offset?: string,
+  ): Promise<{ documents: TextDocument[]; nextOffset?: string }> {
+    const results = await this.qdrant.scroll(this.collectionConfig.name, {
+      limit,
+      offset,
+    });
+    const points = results.points || [];
 
-    return points
-      .filter(p => !!p.payload && typeof (p.payload).model !== 'undefined')
+    const documents = points
+      .filter(p => !!p.payload && typeof (p.payload as any).model !== 'undefined')
       .map(p =>
         TextDocumentQdrantMapper.fromPoint(
           p,
           String((p.payload as { model?: unknown }).model),
         ),
       );
+
+    return {
+      documents,
+      nextOffset: results.next_page_offset?.toString(),
+    };
   }
 
   async deleteById(id: string): Promise<void> {

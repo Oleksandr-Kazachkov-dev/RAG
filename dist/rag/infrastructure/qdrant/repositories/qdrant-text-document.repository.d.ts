@@ -20,6 +20,10 @@ export declare class QdrantTextDocumentRepository implements ITextDocumentReposi
         filter?: object;
     }): Promise<TextDocument[]>;
     findAll(limit?: number): Promise<TextDocument[]>;
+    findAllPaginated(limit?: number, offset?: string): Promise<{
+        documents: TextDocument[];
+        nextOffset?: string;
+    }>;
     deleteById(id: string): Promise<void>;
     private buildFilter;
 }

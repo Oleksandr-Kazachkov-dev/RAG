@@ -112,14 +112,22 @@ let QdrantTextDocumentRepository = class QdrantTextDocumentRepository {
             .map(r => text_document_qdrant_mapper_1.TextDocumentQdrantMapper.fromPoint(r, String(r.payload.model)));
     }
     async findAll(limit = 1_000) {
-        const results = await this.qdrant.scroll(this.collectionConfig.name, { limit });
+        const { documents } = await this.findAllPaginated(limit);
+        return documents;
+    }
+    async findAllPaginated(limit = 100, offset) {
+        const results = await this.qdrant.scroll(this.collectionConfig.name, {
+            limit,
+            offset,
+        });
         const points = results.points || [];
-        if (points.length === limit) {
-            this.logger.warn(`[QDRANT] findAll() hit limit=${limit}. Consider cursor-based pagination via next_page_offset.`);
-        }
-        return points
-            .filter(p => !!p.payload && typeof (p.payload).model !== 'undefined')
+        const documents = points
+            .filter(p => !!p.payload && typeof p.payload.model !== 'undefined')
             .map(p => text_document_qdrant_mapper_1.TextDocumentQdrantMapper.fromPoint(p, String(p.payload.model)));
+        return {
+            documents,
+            nextOffset: results.next_page_offset?.toString(),
+        };
     }
     async deleteById(id) {
         await this.qdrant.deletePoints(this.collectionConfig.name, [id]);

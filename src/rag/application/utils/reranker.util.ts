@@ -10,10 +10,16 @@ export interface RerankedResult<T> {
   finalScore: number;
 }
 
+export interface RerankableItem {
+  text: string;
+  score?: number;
+  vector?: number[];
+}
+
 export class Reranker {
   constructor(private readonly ollamaService: OllamaService) {}
 
-  async rerank<T extends { text: string; score?: number }>(
+  async rerank<T extends RerankableItem>(
     query: string,
     results: T[],
     options: {
@@ -45,7 +51,7 @@ export class Reranker {
     return reranked.sort((a, b) => b.finalScore - a.finalScore).slice(0, topK);
   }
 
-  private async listwiseLlmRerank<T extends { text: string; score?: number }>(
+  private async listwiseLlmRerank<T extends RerankableItem>(
     query: string,
     results: T[],
     topK: number,
@@ -114,7 +120,7 @@ export class Reranker {
     }
   }
 
-  private async llmRerank<T extends { text: string; score?: number }>(
+  private async llmRerank<T extends RerankableItem>(
     query: string,
     results: T[],
   ): Promise<RerankedResult<T>[]> {
@@ -159,26 +165,31 @@ export class Reranker {
     return output;
   }
 
-  private async embeddingRerank<T extends { text: string; score?: number }>(
+  private async embeddingRerank<T extends RerankableItem>(
     query: string,
     results: T[],
   ): Promise<RerankedResult<T>[]> {
     const queryEmbedding = await this.ollamaService.embed(query);
-    const resultEmbeddings = await Promise.all(
-      results.map(r => this.ollamaService.embed(r.text.slice(0, 400))),
+
+    const similarities = await Promise.all(
+      results.map(async (r) => {
+        if (r.vector?.length && queryEmbedding) {
+          return this.cosineSimilarity(queryEmbedding, r.vector);
+        }
+        const emb = await this.ollamaService.embed(r.text.slice(0, 400));
+        return emb && queryEmbedding ? this.cosineSimilarity(queryEmbedding, emb) : 0;
+      }),
     );
-    return results.map((result, idx) => {
-      const similarity = this.cosineSimilarity(queryEmbedding!, resultEmbeddings[idx]!);
-      return {
-        item: result,
-        originalScore: result.score ?? 0,
-        rerankScore: similarity,
-        finalScore: similarity,
-      };
-    });
+
+    return results.map((result, idx) => ({
+      item:          result,
+      originalScore: result.score ?? 0,
+      rerankScore:   similarities[idx],
+      finalScore:    similarities[idx],
+    }));
   }
 
-  private async hybridRerank<T extends { text: string; score?: number }>(
+  private async hybridRerank<T extends RerankableItem>(
     query: string,
     results: T[],
   ): Promise<RerankedResult<T>[]> {

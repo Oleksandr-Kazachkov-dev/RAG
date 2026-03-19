@@ -11,7 +11,6 @@ var __metadata = (this && this.__metadata) || function (k, v) {
 var __param = (this && this.__param) || function (paramIndex, decorator) {
     return function (target, key) { decorator(target, key, paramIndex); }
 };
-var TextRagService_1;
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TextRagService = void 0;
 const common_1 = require("@nestjs/common");
@@ -35,8 +34,9 @@ const transliteration_util_1 = require("../utils/transliteration.util");
 const query_classefire_util_1 = require("../utils/query-classefire.util");
 const MIN_CHUNK_TEXT_LENGTH = 80;
 const UPLOAD_CONCURRENCY = 3;
-let TextRagService = TextRagService_1 = class TextRagService {
-    constructor(configService, ollama, qdrantService, textRepository, conversationRepository, knowledgeGraph, logger) {
+const MAX_CONTEXT_CHARS = 6000;
+let TextRagService = class TextRagService {
+    constructor(configService, ollama, qdrantService, textRepository, conversationRepository, knowledgeGraph, logger, confidencePort) {
         this.configService = configService;
         this.ollama = ollama;
         this.qdrantService = qdrantService;
@@ -44,18 +44,12 @@ let TextRagService = TextRagService_1 = class TextRagService {
         this.conversationRepository = conversationRepository;
         this.knowledgeGraph = knowledgeGraph;
         this.logger = logger;
+        this.confidencePort = confidencePort;
         this.queryTransformer = new query_transformer_util_1.QueryTransformer(this.ollama);
         this.reranker = new reranker_util_1.Reranker(this.ollama);
         this.hybridSearch = new hybrid_search_util_1.HybridSearchEngine(this.qdrantService, this.configService);
         this.contextualCompressor = new contextual_compression_util_1.ContextualCompressor(this.ollama);
         this.queryClassifier = new query_classefire_util_1.QueryClassifier(this.ollama);
-    }
-    cyrillicToLatin(text) {
-        return text
-            .toLowerCase()
-            .split('')
-            .map(c => TextRagService_1.CYRILLIC_TO_LATIN[c] ?? c)
-            .join('');
     }
     async uploadKnowledgeFromFile(file, options) {
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
@@ -203,7 +197,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
             'що', 'як', 'де', 'коли', 'хто', 'чому', 'який', 'яка', 'яке', 'які',
             'чи', 'або', 'та', 'це', 'є', 'у', 'в', 'на', 'до', 'по', 'про', 'за',
             'розкажи', 'підкажи', 'поясни', 'опиши', 'покажи', 'дай', 'знайди',
-            'такий', 'така', 'таке', 'такі', 'розкажи', 'про'
+            'такий', 'така', 'таке', 'такі', 'розкажи', 'про',
         ]);
         return query
             .replace(/[?!.,;:'"]/g, '')
@@ -218,7 +212,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
         while ((m = HEADER_RE.exec(rawText)) !== null) {
             const line = m[1].replace(/[*_`~]/g, '');
             line
-                .split(/[\s\-–—/|,;:()[\]{}]+/)
+                .split(/[\s\-–—/|,;:()\[\]{}]+/)
                 .flatMap(w => w.split(/(?=[A-Z])/))
                 .map(w => w.trim().toLowerCase())
                 .filter(w => w.length > 1)
@@ -250,7 +244,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
     splitDomainParts(raw, out) {
         const TLD = new Set(['com', 'ua', 'net', 'org', 'io', 'co', 'www', 'http', 'https']);
         raw
-            .split(/[./\-_?&#=+:→[\]()\\|,\s]/)
+            .split(/[./\-_?&#=+:→\[\]()\\ |,\s]/)
             .map(s => s.toLowerCase().trim())
             .filter(s => s.length > 1 &&
             s.length < 30 &&
@@ -429,16 +423,17 @@ let TextRagService = TextRagService_1 = class TextRagService {
             });
             results = reranked.map(r => ({ id: r.item.id, text: r.item.text, score: r.finalScore }));
         }
+        results = results.filter(r => r.score > 0.1);
         results = results.slice(0, effectiveLimit);
         if (searchMode === 'entity') {
             const nameTokenGroups = this.extractNameTokens(query);
             if (nameTokenGroups.length > 0) {
                 const chunkMatches = (text, groups) => {
                     const lower = text.toLowerCase();
-                    const translitText = this.cyrillicToLatin(lower);
+                    const translitText = (0, transliteration_util_1.cyrillicToLatin)(lower);
                     return groups.every(variants => variants.some(v => {
                         const vLower = v.toLowerCase();
-                        return lower.includes(vLower) || translitText.includes(this.cyrillicToLatin(vLower));
+                        return lower.includes(vLower) || translitText.includes((0, transliteration_util_1.cyrillicToLatin)(vLower));
                     }));
                 };
                 let filtered = results.filter(r => chunkMatches(r.text, nameTokenGroups));
@@ -446,10 +441,10 @@ let TextRagService = TextRagService_1 = class TextRagService {
                     const surnameGroup = nameTokenGroups[nameTokenGroups.length - 1];
                     filtered = results.filter(r => {
                         const lower = r.text.toLowerCase();
-                        const translitText = this.cyrillicToLatin(lower);
+                        const translitText = (0, transliteration_util_1.cyrillicToLatin)(lower);
                         return surnameGroup.some(v => {
                             const vLower = v.toLowerCase();
-                            return lower.includes(vLower) || translitText.includes(this.cyrillicToLatin(vLower));
+                            return lower.includes(vLower) || translitText.includes((0, transliteration_util_1.cyrillicToLatin)(vLower));
                         });
                     });
                 }
@@ -485,6 +480,144 @@ let TextRagService = TextRagService_1 = class TextRagService {
             createdAt: doc.createdAt.toISOString(),
             model: doc.model,
         }));
+    }
+    buildPrompt(type, context, query) {
+        const PROMPTS = {
+            entity: `
+      Ти — асистент корпоративної бази знань.
+
+      ТВОЄ ГОЛОВНЕ ПРАВИЛО:
+      Використовуй ТІЛЬКИ інформацію з <context>.
+      ЗАБОРОНЕНО вигадувати будь-які факти поза контекстом.
+
+      <context>
+      ${context}
+      </context>
+
+      ЗАВДАННЯ:
+
+      1. Проаналізуй ВЕСЬ контекст
+      2. Збери ВСЮ інформацію, що стосується сутності (людини / об'єкта)
+      3. ОБ'ЄДНАЙ її в цілісне узагальнення
+      4. Структуруй відповідь за змістом (ролі, дії, процеси, деталі тощо)
+
+      ФОРМАТ ВІДПОВІДІ:
+
+      - короткий вступ (хто/що це)
+      - далі логічні підрозділи (сам обери структуру)
+      - під кожним — узагальнена інформація
+
+      ВАЖЛИВО:
+
+      ❌ НЕ МОЖНА:
+      - писати "ось фрагменти", "у документі сказано"
+      - просто перераховувати шматки тексту
+      - дублювати однакові факти
+
+      ✅ ПОТРІБНО:
+      - писати як готове пояснення для людини
+      - об'єднувати інформацію з різних частин контексту
+
+      Якщо інформації немає:
+      "Інформація відсутня в базі знань"
+
+      Питання:
+      ${query}
+
+      Відповідь:
+      `,
+            factual: `
+      Ти — асистент корпоративної бази знань.
+
+      Відповідай ТІЛЬКИ на основі <context>.
+      ЗАБОРОНЕНО вигадувати інформацію.
+
+      <context>
+      ${context}
+      </context>
+
+      ЗАВДАННЯ:
+
+      1. Проаналізуй весь контекст
+      2. Визнач точну відповідь на питання
+      3. Якщо інформація розкидана — ОБ'ЄДНАЙ її
+
+      ФОРМАТ:
+
+      - 1–3 речення
+      - максимально конкретно
+      - без зайвих деталей
+
+      ВАЖЛИВО:
+
+      ❌ НЕ МОЖНА:
+      - писати "у контексті сказано"
+      - давати список фрагментів
+      - копіювати шматки тексту без узагальнення
+
+      ✅ ПОТРІБНО:
+      - сформулювати єдину чітку відповідь
+
+      Якщо недостатньо даних:
+      "Недостатньо інформації у базі знань"
+
+      Питання:
+      ${query}
+
+      Відповідь:
+      `,
+            wide: `
+      Ти — асистент корпоративної бази знань.
+
+      Використовуй ТІЛЬКИ інформацію з <context>.
+      ЗАБОРОНЕНО вигадувати факти.
+
+      <context>
+      ${context}
+      </context>
+
+      ЗАВДАННЯ:
+
+      1. Уважно прочитай ВЕСЬ контекст
+      2. Визнач усі ключові теми
+      3. ОБ'ЄДНАЙ інформацію у логічні блоки
+      4. Побудуй цілісне пояснення теми
+
+      ФОРМАТ ВІДПОВІДІ:
+
+      ## Короткий вступ
+      Стислий опис теми
+
+      ## Основна частина
+      Кілька логічних підтем (сам визначаєш структуру)
+
+      - під кожною темою — узагальнення, а НЕ цитати
+
+      ## (опційно) Процес / кроки
+      Якщо є інструкції — подай як послідовність дій
+
+      ВАЖЛИВО:
+
+      ❌ НЕ МОЖНА:
+      - "Ось фрагменти..."
+      - список знайдених шматків тексту
+      - посилання на документи
+      - повтори
+
+      ✅ ПОТРІБНО:
+      - писати як готову статтю / інструкцію
+      - зшивати інформацію з різних місць
+      - використовувати максимум контексту
+
+      Якщо частина інформації відсутня — просто пропусти її.
+
+      Питання:
+      ${query}
+
+      Відповідь:
+      `,
+        };
+        return PROMPTS[type];
     }
     async generateAnswer(query, options) {
         prompt_injection_guard_1.PromptInjectionGuard.assertSafe(query);
@@ -531,7 +664,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
             ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
             : rawRetrieved;
         const retrieved = p.useParentExpansion
-            ? this.expandToParentContext(filtered)
+            ? await this.expandToParentContext(filtered)
             : filtered;
         const useKG = options?.useKnowledgeGraph ?? p.useKnowledgeGraph;
         let kgContext;
@@ -549,160 +682,16 @@ let TextRagService = TextRagService_1 = class TextRagService {
             .slice(0, 8)
             .map(doc => doc.text)
             .join('\n\n');
-        let historyBlock = '';
-        if (options?.conversationHistory?.length) {
-            historyBlock =
-                '\n====================\nІСТОРІЯ РОЗМОВИ:\n' +
-                    options.conversationHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n') +
-                    '\n';
-        }
-        const PROMPTS = {
-            entity: `
-      Ти — асистент корпоративної бази знань.
-      
-      ТВОЄ ГОЛОВНЕ ПРАВИЛО:
-      Використовуй ТІЛЬКИ інформацію з <context>.
-      ЗАБОРОНЕНО вигадувати будь-які факти поза контекстом.
-      
-      <context>
-      ${context}
-      </context>
-      
-      ЗАВДАННЯ:
-      
-      1. Проаналізуй ВЕСЬ контекст
-      2. Збери ВСЮ інформацію, що стосується сутності (людини / об’єкта)
-      3. ОБ’ЄДНАЙ її в цілісне узагальнення
-      4. Структуруй відповідь за змістом (ролі, дії, процеси, деталі тощо)
-      
-      ФОРМАТ ВІДПОВІДІ:
-      
-      - короткий вступ (хто/що це)
-      - далі логічні підрозділи (сам обери структуру)
-      - під кожним — узагальнена інформація
-      
-      ВАЖЛИВО:
-      
-      ❌ НЕ МОЖНА:
-      - писати "ось фрагменти", "у документі сказано"
-      - просто перераховувати шматки тексту
-      - дублювати однакові факти
-      
-      ✅ ПОТРІБНО:
-      - писати як готове пояснення для людини
-      - об’єднувати інформацію з різних частин контексту
-      
-      Якщо інформації немає:
-      "Інформація відсутня в базі знань"
-      
-      Питання:
-      ${query}
-      
-      Відповідь:
-      `,
-            factual: `
-      Ти — асистент корпоративної бази знань.
-      
-      Відповідай ТІЛЬКИ на основі <context>.
-      ЗАБОРОНЕНО вигадувати інформацію.
-      
-      <context>
-      ${context}
-      </context>
-      
-      ЗАВДАННЯ:
-      
-      1. Проаналізуй весь контекст
-      2. Визнач точну відповідь на питання
-      3. Якщо інформація розкидана — ОБ’ЄДНАЙ її
-      
-      ФОРМАТ:
-      
-      - 1–3 речення
-      - максимально конкретно
-      - без зайвих деталей
-      
-      ВАЖЛИВО:
-      
-      ❌ НЕ МОЖНА:
-      - писати "у контексті сказано"
-      - давати список фрагментів
-      - копіювати шматки тексту без узагальнення
-      
-      ✅ ПОТРІБНО:
-      - сформулювати єдину чітку відповідь
-      
-      Якщо недостатньо даних:
-      "Недостатньо інформації у базі знань"
-      
-      Питання:
-      ${query}
-      
-      Відповідь:
-      `,
-            wide: `
-      Ти — асистент корпоративної бази знань.
-      
-      Використовуй ТІЛЬКИ інформацію з <context>.
-      ЗАБОРОНЕНО вигадувати факти.
-      
-      <context>
-      ${context}
-      </context>
-      
-      ЗАВДАННЯ:
-      
-      1. Уважно прочитай ВЕСЬ контекст
-      2. Визнач усі ключові теми
-      3. ОБ’ЄДНАЙ інформацію у логічні блоки
-      4. Побудуй цілісне пояснення теми
-      
-      ФОРМАТ ВІДПОВІДІ:
-      
-      ## Короткий вступ
-      Стислий опис теми
-      
-      ## Основна частина
-      Кілька логічних підтем (сам визначаєш структуру)
-      
-      - під кожною темою — узагальнення, а НЕ цитати
-      
-      ## (опційно) Процес / кроки
-      Якщо є інструкції — подай як послідовність дій
-      
-      ВАЖЛИВО:
-      
-      ❌ НЕ МОЖНА:
-      - "Ось фрагменти..."
-      - список знайдених шматків тексту
-      - посилання на документи
-      - повтори
-      
-      ✅ ПОТРІБНО:
-      - писати як готову статтю / інструкцію
-      - зшивати інформацію з різних місць
-      - використовувати максимум контексту
-      
-      ДОДАТКОВО:
-      
-      Перед відповіддю подумай:
-      "Як пояснити це людині без доступу до контексту?"
-      
-      Якщо частина інформації відсутня — просто пропусти її.
-      
-      Питання:
-      ${query}
-      
-      Відповідь:
-      `,
-        };
-        let prompt = PROMPTS[classification.type];
+        let prompt = this.buildPrompt(classification.type, context, query);
         if (kgContext) {
             prompt +=
                 `\n\n<knowledge_graph>\n${kgContext}\n</knowledge_graph>\n` +
                     `(Граф знань надає додатковий контекст про сутності, але пріоритет — документальний контекст вище.)`;
         }
-        if (historyBlock) {
+        if (options?.conversationHistory?.length) {
+            const historyBlock = '\n====================\nІСТОРІЯ РОЗМОВИ:\n' +
+                options.conversationHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n') +
+                '\n';
             prompt += `\n\n<conversation_history>\n${historyBlock}\n</conversation_history>`;
         }
         prompt += `\n\n<question>${query}</question>\n\nВідповідь (структурована, на основі контексту):`;
@@ -778,7 +767,6 @@ let TextRagService = TextRagService_1 = class TextRagService {
             _searchMode: p.searchMode,
         };
         const rawRetrieved = await this.retrieve(query, undefined, retrieveOptions);
-        console.log('rawRetrieved :>> ', rawRetrieved);
         if (typeof rawRetrieved === 'string') {
             yield { event: 'metadata', metadata: { relevantChunks: 0, citations: [] } };
             yield { event: 'token', token: rawRetrieved };
@@ -789,7 +777,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
             ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
             : rawRetrieved;
         const retrieved = p.useParentExpansion
-            ? this.expandToParentContext(filtered)
+            ? await this.expandToParentContext(filtered)
             : filtered;
         if (retrieved.length === 0) {
             yield {
@@ -808,104 +796,16 @@ let TextRagService = TextRagService_1 = class TextRagService {
             .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
             .map(doc => doc.text)
             .join('\n\n');
-        let historyBlock = '';
-        if (options?.conversationHistory?.length) {
-            historyBlock =
-                '\n====================\nІСТОРІЯ РОЗМОВИ:\n' +
-                    options.conversationHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n') +
-                    '\n';
-        }
-        const PROMPTS = {
-            entity: `
-      Ти — асистент корпоративної бази знань.
-      
-      ГОЛОВНЕ ПРАВИЛО:
-      Використовуй тільки інформацію з <context>.
-      Використай весь надайний текст
-      ЗАБОРОНЕНО вигадувати факти або використовувати зовнішні знання.
-      
-      Контекст може містити часткову або непряму інформацію.
-      
-      <context>
-      ${context}
-      </context>
-      
-      Питання:
-      ${query}
-      
-      ЗАВДАННЯ:
-      
-      1. Знайди інформацію яка стосується людини з питання.
-      2. Ігноруй факти які не стосуються цієї людини.
-      3. Згрупуй інформацію у логічні підтеми.
-      
-      МОЖЛИВІ ПІДТЕМИ:
-      
-      - роль / позиція
-      - досвід
-      - минуле
-      - обов'язки
-      - проєкти
-      - кар'єра
-      - інша релевантна інформація
-      
-      ПРАВИЛА:
-      
-      - використовуй тільки інформацію з context
-      - не копіюй текст дослівно
-      - не повторюй однакові факти
-      - якщо інформації немає — напиши "Інформація відсутня в базі знань"
-      
-      Відповідь:
-      `,
-            factual: `
-      Ти — асистент корпоративної бази знань.
-      
-      Використовуй тільки інформацію з <context>.
-      Заборонено вигадувати факти.
-      
-      Контекст може містити часткову або непряму інформацію — ігноруй усе, що не допомагає зрозуміти суть питання.
-      
-      <context>
-      ${context}
-      </context>
-      
-      Питання:
-      ${query}
-      
-      Завдання:
-      
-      Проаналізуй контекст і сформуй коротку, зрозумілу відповідь на питання. 
-      Якщо прямої персональної інформації немає, логічно поясни процес або правило, які стосуються питання. 
-      Ігноруй деталі, які не важливі для користувача, такі як конкретні системи чи внутрішні назви проектів. 
-      Відповідь повинна бути природною, як би ти пояснив колезі, 1–3 речення.
-      
-      Відповідь:
-      `,
-            wide: `
-        Ти аналізуєш фрагменти корпоративної бази знань.
-  
-        Питання:
-        ${query}
-
-        Фрагменти:
-
-        ${context}
-
-        ЗАВДАННЯ:
-        Вибери тільки ті фрагменти які реально допомагають відповісти на питання.
-
-        Якщо нічого не підходить:
-        NONE
-      `
-        };
-        let prompt = PROMPTS[classification.type];
+        let prompt = this.buildPrompt(classification.type, context, query);
         if (kgContext) {
             prompt +=
                 `\n\n<knowledge_graph>\n${kgContext}\n</knowledge_graph>\n` +
                     `(Граф знань надає додатковий контекст про сутності, але пріоритет — документальний контекст вище.)`;
         }
-        if (historyBlock) {
+        if (options?.conversationHistory?.length) {
+            const historyBlock = '\n====================\nІСТОРІЯ РОЗМОВИ:\n' +
+                options.conversationHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n') +
+                '\n';
             prompt += `\n\n<conversation_history>\n${historyBlock}\n</conversation_history>`;
         }
         prompt += `\n\n<question>${query}</question>\n\nВідповідь (структурована, на основі контексту):`;
@@ -946,6 +846,23 @@ let TextRagService = TextRagService_1 = class TextRagService {
         catch (err) {
             yield { event: 'error', error: err?.message ?? 'LLM streaming failed' };
             return;
+        }
+        try {
+            const chunkTexts = retrieved.map(r => r.text);
+            const verification = await this.confidencePort.verify(fullAnswer, chunkTexts);
+            this.logger.log('Stream_Confidence', {
+                score: verification.confidence.score,
+                tier: verification.confidence.tier,
+                grounded: verification.grounded,
+                verdict: verification.llmVerdict,
+            });
+            if (!verification.grounded && verification.llmVerdict === 'NO') {
+                fullAnswer = 'Немає релевантної відповіді';
+                yield { event: 'correction', correctedAnswer: fullAnswer, reason: 'hallucination' };
+            }
+        }
+        catch (err) {
+            this.logger.warn('Stream_Confidence failed', { error: err?.message });
         }
         const useCitations = options?.useCitationTracking ?? p.useCitationTracking;
         let citations = [];
@@ -1005,11 +922,28 @@ let TextRagService = TextRagService_1 = class TextRagService {
         const matched = needleWords.filter(word => haystackLower.includes(word));
         return matched.length / needleWords.length > 0.6;
     }
-    expandToParentContext(results) {
+    async expandToParentContext(results) {
+        const parentIds = [...new Set(results.filter(r => r.parentId).map(r => r.parentId))];
+        const parentTexts = new Map();
+        if (parentIds.length > 0) {
+            try {
+                const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
+                const collectionName = ragConfig?.textRagCollectionName;
+                if (collectionName) {
+                    const parentPoints = await this.qdrantService.getPoints(collectionName, parentIds);
+                    for (const p of parentPoints) {
+                        parentTexts.set(p.id.toString(), p.payload?.text ?? '');
+                    }
+                }
+            }
+            catch (err) {
+                this.logger.warn('expandToParentContext: batch fetch failed', { err });
+            }
+        }
         const parentGroups = new Map();
         const noParent = [];
         for (const doc of results) {
-            if (!doc.parentId || !doc.parentText) {
+            if (!doc.parentId) {
                 noParent.push(doc);
                 continue;
             }
@@ -1019,9 +953,16 @@ let TextRagService = TextRagService_1 = class TextRagService {
             parentGroups.get(doc.parentId).children.push(doc.text);
         }
         const merged = [];
-        for (const { doc, children } of parentGroups.values()) {
-            const combinedText = `${doc.parentText}\n\n${[...new Set(children)].join('\n\n')}`;
-            merged.push({ ...doc, text: combinedText });
+        for (const [parentId, { doc, children }] of parentGroups) {
+            const pText = parentTexts.get(parentId) ?? doc.parentText ?? '';
+            const uniqueChildren = [...new Set(children)];
+            const combinedText = pText
+                ? `${pText}\n\n${uniqueChildren.join('\n\n')}`
+                : uniqueChildren.join('\n\n');
+            merged.push({
+                ...doc,
+                text: combinedText.slice(0, MAX_CONTEXT_CHARS),
+            });
         }
         return [...merged, ...noParent];
     }
@@ -1108,7 +1049,7 @@ let TextRagService = TextRagService_1 = class TextRagService {
         return false;
     }
     buildCanonicalId(name, type) {
-        const slug = this.cyrillicToLatin(name)
+        const slug = (0, transliteration_util_1.cyrillicToLatin)(name)
             .replace(/[^a-z0-9]/g, '_')
             .replace(/_+/g, '_')
             .replace(/^_|_$/g, '');
@@ -1134,24 +1075,15 @@ let TextRagService = TextRagService_1 = class TextRagService {
     }
 };
 exports.TextRagService = TextRagService;
-TextRagService.CYRILLIC_TO_LATIN = {
-    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'h', 'ґ': 'g',
-    'д': 'd', 'е': 'e', 'є': 'ye', 'ж': 'zh', 'з': 'z',
-    'и': 'y', 'і': 'i', 'ї': 'yi', 'й': 'y', 'к': 'k',
-    'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p',
-    'р': 'r', 'с': 's', 'т': 't', 'у': 'u', 'ф': 'f',
-    'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
-    'ь': '', 'ю': 'yu', 'я': 'ya', 'ё': 'yo', 'э': 'e',
-    'ъ': '', 'ы': 'y',
-};
-exports.TextRagService = TextRagService = TextRagService_1 = __decorate([
+exports.TextRagService = TextRagService = __decorate([
     (0, common_1.Injectable)(),
     __param(3, (0, common_1.Inject)('ITextDocumentRepository')),
     __param(4, (0, common_1.Inject)('IConversationSessionRepository')),
     __param(5, (0, common_1.Inject)('IKnowledgeGraphPort')),
     __param(6, (0, common_1.Inject)('LoggerPort')),
+    __param(7, (0, common_1.Inject)('IConfidencePort')),
     __metadata("design:paramtypes", [config_1.ConfigService,
         ollama_service_1.OllamaService,
-        rag_qdrant_service_1.RagQdrantService, Object, Object, Object, Object])
+        rag_qdrant_service_1.RagQdrantService, Object, Object, Object, Object, Object])
 ], TextRagService);
 //# sourceMappingURL=text-rag.service.js.map

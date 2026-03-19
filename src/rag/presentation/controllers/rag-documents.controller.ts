@@ -38,8 +38,6 @@ import { UploadFolderDto } from '../dto/upload-folder.dto';
 export class RagDocumentsController {
   constructor(
     @Inject('CommandBus') private readonly commandBus: CommandBusPort,
-    // Injected directly because CommandBus.execute() cannot return an
-    // AsyncGenerator through its generic Promise-based signature.
     private readonly askQuestionHandler: AskQuestionHandler,
   ) {}
 
@@ -75,30 +73,18 @@ export class RagDocumentsController {
     );
   }
 
-  /**
-   * SSE streaming endpoint — `POST /rag/documents/ask/stream`
-   *
-   * Accepts the same `AskDto` body as `/ask`.
-   * Responds with `Content-Type: text/event-stream` and writes one SSE event
-   * per `IStreamChunk` yielded by `AskQuestionHandler.streamableExecute`.
-   *
-   * SSE event format:
-   *   event: <IStreamChunk['event']>
-   *   data:  <JSON-serialised IStreamChunk>
-   *
-   * The connection is closed automatically after the `done` or `error` event.
-   */
   @Post('ask/stream')
   async askQuestionStream(
     @Body() dto: AskDto,
     @Res() res: Response,
   ): Promise<void> {
-    // ── SSE headers ──────────────────────────────────────────────────────────
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no'); // disable Nginx proxy buffering
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Content-Encoding', 'none');
     res.flushHeaders();
+    res.socket?.setNoDelay(true);
 
     const command = new AskQuestionCommand(dto.question, {
       limit:                    dto.limit,
@@ -122,6 +108,7 @@ export class RagDocumentsController {
 
     const writeChunk = (chunk: object, eventName: string): void => {
       res.write(`event: ${eventName}\ndata: ${JSON.stringify(chunk)}\n\n`);
+      (res as any).flush?.();
     };
 
     try {

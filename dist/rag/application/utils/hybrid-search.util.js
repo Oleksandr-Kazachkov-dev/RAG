@@ -67,12 +67,12 @@ class HybridSearchEngine {
         const minKeywordMatch = options.minKeywordMatch ?? cfg.minKeywordMatch;
         const minTextLength = options.minTextLength ?? 80;
         const fetchLimit = limit * cfg.fetchMultiplier;
-        const qdrantScoreThreshold = null;
         const vectorResults = await this.qdrantService.search(collectionName, {
             vector: queryEmbedding.values,
             limit: fetchLimit,
             searchMode: qdrantMode,
-            score_threshold: qdrantScoreThreshold,
+            score_threshold: null,
+            with_vector: true,
         });
         const useKeywordScroll = (mode === 'entity' || mode === 'balanced' || mode === 'wide') && keywords.length > 0;
         let keywordScrollPoints = [];
@@ -107,6 +107,7 @@ class HybridSearchEngine {
             vectorScore: r.score ?? 0,
             keywordScore: 0,
             hybridScore: 0,
+            vector: Array.isArray(r.vector) ? r.vector : undefined,
         }));
         const scrollUnified = keywordScrollPoints
             .filter(p => !vectorIds.has(p.id))

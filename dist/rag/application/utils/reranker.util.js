@@ -125,16 +125,19 @@ class Reranker {
     }
     async embeddingRerank(query, results) {
         const queryEmbedding = await this.ollamaService.embed(query);
-        const resultEmbeddings = await Promise.all(results.map(r => this.ollamaService.embed(r.text.slice(0, 400))));
-        return results.map((result, idx) => {
-            const similarity = this.cosineSimilarity(queryEmbedding, resultEmbeddings[idx]);
-            return {
-                item: result,
-                originalScore: result.score ?? 0,
-                rerankScore: similarity,
-                finalScore: similarity,
-            };
-        });
+        const similarities = await Promise.all(results.map(async (r) => {
+            if (r.vector?.length && queryEmbedding) {
+                return this.cosineSimilarity(queryEmbedding, r.vector);
+            }
+            const emb = await this.ollamaService.embed(r.text.slice(0, 400));
+            return emb && queryEmbedding ? this.cosineSimilarity(queryEmbedding, emb) : 0;
+        }));
+        return results.map((result, idx) => ({
+            item: result,
+            originalScore: result.score ?? 0,
+            rerankScore: similarities[idx],
+            finalScore: similarities[idx],
+        }));
     }
     async hybridRerank(query, results) {
         const embeddingScores = await this.embeddingRerank(query, results);
