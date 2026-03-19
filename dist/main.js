@@ -15,6 +15,10 @@ async function bootstrap() {
         transform: true,
     }));
     app.useGlobalFilters(new all_exeption_filter_1.AllExceptionsFilter());
+    const server = app.getHttpServer();
+    server.setTimeout(0);
+    server.keepAliveTimeout = 0;
+    server.headersTimeout = 0;
     const allowedOrigins = process.env.ALLOWED_ORIGINS
         ? process.env.ALLOWED_ORIGINS.split(',')
         : [];

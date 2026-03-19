@@ -17,8 +17,8 @@ const qdrant_collection_config_mapper_1 = require("./mappers/qdrant-collection-c
 const rag_config_1 = require("../config/rag-config");
 const EF_BY_MODE = {
     precise: 256,
-    balanced: 128,
-    wide: 128,
+    balanced: 256,
+    wide: 256,
 };
 const DEFAULT_SCORE_THRESHOLD_BY_MODE = {
     precise: 0.75,
@@ -30,7 +30,7 @@ let RagQdrantService = class RagQdrantService {
         this.configService = configService;
         const ragConfig = this.configService.get(rag_config_1.RAG_CONFIG);
         this.client = new js_client_rest_1.QdrantClient({
-            url: ragConfig?.qdrantUrl || 'https://f5c19a2e-1c6f-49b3-abdd-2c77acc3ff42.eu-central-1-0.aws.cloud.qdrant.io',
+            url: ragConfig?.qdrantUrl,
             apiKey: ragConfig?.qdrantApiKey
         });
     }

@@ -9,8 +9,8 @@ export type SearchMode = 'precise' | 'wide' | 'balanced';
 
 const EF_BY_MODE: Record<SearchMode, number> = {
   precise: 256,
-  balanced: 128,
-  wide: 128,
+  balanced: 256,
+  wide: 256,
 };
 
 const DEFAULT_SCORE_THRESHOLD_BY_MODE: Record<SearchMode, number> = {
@@ -26,7 +26,7 @@ export class RagQdrantService {
   constructor(private readonly configService: ConfigService) {
     const ragConfig = this.configService.get<TRagConfig>(RAG_CONFIG);
     this.client = new QdrantClient({
-      url: ragConfig?.qdrantUrl || 'https://f5c19a2e-1c6f-49b3-abdd-2c77acc3ff42.eu-central-1-0.aws.cloud.qdrant.io',
+      url: ragConfig?.qdrantUrl,
       apiKey: ragConfig?.qdrantApiKey
     });
   }

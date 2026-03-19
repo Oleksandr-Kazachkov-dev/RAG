@@ -51,8 +51,8 @@ export interface FineTuningParams {
 
 const PROFILE_BY_TYPE: Record<QueryType, FineTuningParams> = {
   entity: {
-    limit:                    12,
-    scoreThreshold:           0.52,
+    limit:                    17,
+    scoreThreshold:           0.5,
     searchMode:               'entity',
     useHybridSearch:          true,
     useQueryTransformation:   true,
@@ -65,13 +65,13 @@ const PROFILE_BY_TYPE: Record<QueryType, FineTuningParams> = {
     useCitationTracking:      true,
     temperature:              0,
     topP:                     undefined,
-    topK:                     2,
+    topK:                     undefined,
     maxTokens:                10000,
     repeatPenalty:            undefined,
     seed:                     undefined,
   },
   factual: {
-    limit:                    6,
+    limit:                    10,
     scoreThreshold:           0.8,
     searchMode:               'balanced',
     useHybridSearch:          true,
@@ -91,8 +91,8 @@ const PROFILE_BY_TYPE: Record<QueryType, FineTuningParams> = {
     seed:                     undefined,
   },
   wide: {
-    limit:                    27,
-    scoreThreshold:           0.3,
+    limit:                    6,
+    scoreThreshold:           0.72,
     searchMode:               'wide',
     useHybridSearch:          true,
     useQueryTransformation:   true,
@@ -105,7 +105,7 @@ const PROFILE_BY_TYPE: Record<QueryType, FineTuningParams> = {
     useCitationTracking:      true,
     temperature:              0.3,
     topP:                     1,
-    topK:                     200,
+    topK:                     2,
     maxTokens:                7200,
     repeatPenalty:            1.2,
     seed:                     undefined,

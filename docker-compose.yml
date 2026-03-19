@@ -35,7 +35,7 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4jpassword}
 
   qdrant:
-    image: qdrant/qdrant:v1.16.2   # <-- оновлено версію
+    image: qdrant/qdrant:v1.17.0
     container_name: qdrant
     ports:
       - "6333:6333"

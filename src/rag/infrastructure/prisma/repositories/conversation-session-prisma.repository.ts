@@ -41,7 +41,7 @@ export class ConversationSessionPrismaRepository
 
     return sessions
       .reverse()
-      .map((s) => ({
+      .map((s: { query: string, answer: string, timestamp: Date, embedding: Array<number> }) => ({
         query: s.query,
         answer: s.answer,
         timestamp: s.timestamp,
@@ -80,7 +80,7 @@ export class ConversationSessionPrismaRepository
     });
 
     await this.prisma.conversationSession.deleteMany({
-      where: { id: { in: oldest.map((s) => s.id) } },
+      where: { id: { in: oldest.map((s: { id: string }) => s.id) } },
     });
   }
 }
