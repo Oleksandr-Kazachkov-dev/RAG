@@ -1189,7 +1189,6 @@ export class TextRagService implements TextRagPort {
       return;
     }
 
-
     const effectiveThreshold = classification.type === 'factual'
       ? Math.min(p.scoreThreshold, FACTUAL_SCORE_THRESHOLD_CAP)
       : p.scoreThreshold;
@@ -1201,12 +1200,15 @@ export class TextRagService implements TextRagPort {
       ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
       : rawRetrieved;
 
-
     const postFilterResults = preFiltered.length > 0 ? preFiltered : rawRetrieved.slice(0, 3);
+
+    console.log('postFilterResults.length :>> ', postFilterResults.length);
 
     const retrieved = p.useParentExpansion
       ? await this.expandToParentContext(postFilterResults)
       : postFilterResults;
+
+    console.log('retrieved.length :>> ', retrieved.length);
 
     if (retrieved.length === 0) {
       yield {
@@ -1224,11 +1226,15 @@ export class TextRagService implements TextRagPort {
 
     const context = retrieved
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, 8)  // cap context to 8 chunks — same as generateAnswer
+      .slice(0, 8) 
       .map(doc => doc.text)
       .join('\n\n');
 
     let prompt = this.buildPrompt(classification.type, context, query);
+
+    console.log('context :>> ', context);
+
+    console.log('prompt.length :>> ', prompt.length);
 
     if (kgContext) {
       prompt +=
