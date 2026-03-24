@@ -381,6 +381,7 @@ let TextRagService = class TextRagService {
         const primaryEmbedding = new embedding_vo_1.Embedding((0, embedding_util_1.extractEmbedding)(embeddings[0]));
         let results = [];
         const effectivenessLimit = (searchMode === 'entity' ? 6 : 4) * effectiveLimit;
+        console.log('effectivenessLimit :>> ', effectivenessLimit);
         if (useHybridSearch) {
             const allSearchResults = await Promise.all(embeddings.map(emb => this.hybridSearch.search(collectionName, new embedding_vo_1.Embedding((0, embedding_util_1.extractEmbedding)(emb)), keywords, effectivenessLimit, {
                 searchMode,
@@ -388,7 +389,9 @@ let TextRagService = class TextRagService {
                 originalQuery: query,
                 ...(scoreThreshold !== undefined ? { scoreThreshold } : {}),
             })));
+            console.log('allSearchResults.length :>> ', allSearchResults.length);
             const validResults = allSearchResults.filter(Boolean);
+            console.log('validResults.length :>> ', validResults.length);
             if (validResults.length === 0)
                 return 'There is no relevant information in knowledge';
             const mergedMap = new Map();
@@ -400,6 +403,7 @@ let TextRagService = class TextRagService {
                     }
                 }
             }
+            console.log('mergedMap :>> ', mergedMap);
             const uaTranslations = (0, query_transformer_util_1.translateQueryToUkrainian)(query);
             if (uaTranslations.length > 0 && collectionName) {
                 try {
@@ -439,6 +443,7 @@ let TextRagService = class TextRagService {
                     this.logger.warn('UA vector search failed', { error: err?.message });
                 }
             }
+            console.log('uaTranslations :>> ', uaTranslations);
             results = [...mergedMap.values()]
                 .sort((a, b) => b.hybridScore - a.hybridScore)
                 .map(r => ({ id: r.id, text: r.text, score: r.hybridScore }));

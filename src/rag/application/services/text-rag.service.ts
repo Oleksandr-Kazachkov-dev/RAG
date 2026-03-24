@@ -568,12 +568,14 @@ export class TextRagService implements TextRagPort {
       }
     }
 
-    const embeddings       = await Promise.all(queriesToEmbed.map(q => this.ollama.embed(q)));
+    const embeddings = await Promise.all(queriesToEmbed.map(q => this.ollama.embed(q)));
     const primaryEmbedding = new Embedding(extractEmbedding(embeddings[0]));
 
     let results: Array<{ id: string; text: string; score: number }> = [];
 
     const effectivenessLimit = (searchMode === 'entity' ? 6 : 4) * effectiveLimit;
+
+    console.log('effectivenessLimit :>> ', effectivenessLimit);
 
     if (useHybridSearch) {
       const allSearchResults = await Promise.all(
@@ -593,7 +595,10 @@ export class TextRagService implements TextRagPort {
         ),
       );
 
+      console.log('allSearchResults.length :>> ', allSearchResults.length);
+
       const validResults = allSearchResults.filter(Boolean) as NonNullable<typeof allSearchResults[0]>[];
+      console.log('validResults.length :>> ', validResults.length);
       if (validResults.length === 0) return 'There is no relevant information in knowledge';
 
       const mergedMap = new Map<string, HybridSearchResult>();
@@ -606,9 +611,8 @@ export class TextRagService implements TextRagPort {
         }
       }
 
-      // For English queries: run separate vector search with UA translations.
-      // UA embeddings are semantically closer to UA/EN knowledge chunks than EN query embeddings.
-      // These results are merged with priority — they overwrite existing lower-scored entries.
+      console.log('mergedMap :>> ', mergedMap);
+
       const uaTranslations = translateQueryToUkrainian(query);
       if (uaTranslations.length > 0 && collectionName) {
         try {
@@ -653,6 +657,8 @@ export class TextRagService implements TextRagPort {
           this.logger.warn('UA vector search failed', { error: err?.message });
         }
       }
+
+      console.log('uaTranslations :>> ', uaTranslations);
 
       results = [...mergedMap.values()]
         .sort((a, b) => b.hybridScore - a.hybridScore)

@@ -174,7 +174,6 @@ const SYNONYM_MAP: Record<string, string[]> = {
 };
 
 const EN_TO_UA_QUERY_PATTERNS: Array<[RegExp, string]> = [
-  // Company name / origin
   [/why.{0,20}(name|called|named).{0,20}company/i,   'Розкажи історію назви компанії'],
   [/(name|origin|history).{0,20}company/i,            'Вибір назви компанії'],
   [/what.{0,20}(mean|means)/i,                        'що означає назва компанії'],
@@ -225,10 +224,6 @@ function isEnglishQuery(query: string): boolean {
   return latin / letters.length > 0.5;
 }
 
-/**
- * Returns Ukrainian rephrasing(s) for an English query based on pattern matching.
- * Returns [] if no pattern matches or query is not English.
- */
 export function translateQueryToUkrainian(query: string): string[] {
   if (!isEnglishQuery(query)) return [];
   const results = new Set<string>();
