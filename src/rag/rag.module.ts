@@ -5,7 +5,7 @@ import { OllamaModule } from './infrastructure/ollama/ollama.module';
 import { S3Module } from './infrastructure/s3/s3.module';
 import { S3StorageService } from './infrastructure/s3/s3.storage.service';
 import { QdrantModule } from './infrastructure/qdrant/qdrant.module';
-import { PrismaModule } from './infrastructure/prisma/prisma.module'; // ← замість PostgresModule
+import { PrismaModule } from './infrastructure/prisma/prisma.module';
 import { Neo4jModule } from './infrastructure/neo4j/neo4j.module';
 import { QdrantTextDocumentRepository } from './infrastructure/qdrant/repositories/qdrant-text-document.repository';
 import { QdrantImageDocumentRepository } from './infrastructure/qdrant/repositories/qdrant-image-document.repository';
@@ -44,7 +44,12 @@ import { ConsoleLoggerAdapter } from './shared/application/ports/console.logger.
 import { OllamaChatAdapter } from './infrastructure/ollama/ollama-chat.adapter';
 import { OllamaEmbeddingAdapter } from './infrastructure/ollama/ollama-embedding.adapter';
 import { ConfidenceService } from './application/services/confidence.service';
+import { LinkService } from './application/services/link.service';
 import { ChatController } from './presentation/controllers/chat.controller';
+import { KnowledgeLinkPrismaRepository } from './domain/repositories/knowledge-link-prisma.repository';
+import { LinksController } from './presentation/controllers/link.controller';
+import { ExtractLinksHandler } from './application/handlers/extract-links.handler';
+import { IndexLinksCommand } from './application/commands/extract-links.command';
 
 @Module({
   imports: [
@@ -57,16 +62,19 @@ import { ChatController } from './presentation/controllers/chat.controller';
     RagCommandBusModule,
   ],
   providers: [
-    { provide: 'LoggerPort',              useClass: ConsoleLoggerAdapter },
-    { provide: 'IEmbeddingPort',          useClass: OllamaEmbeddingAdapter },
-    { provide: 'IChatLlmPort',            useClass: OllamaChatAdapter },
-    { provide: 'ITextDocumentRepository', useExisting: QdrantTextDocumentRepository },
-    { provide: 'IImageDocumentRepository',useExisting: QdrantImageDocumentRepository },
-    { provide: 'IStoragePort',            useExisting: S3StorageService },
-    { provide: 'IKnowledgeGraphPort',     useClass: Neo4jKnowledgeGraphService },
-    { provide: 'TextRagPort',             useClass: TextRagService },
-    { provide: 'ImageRagPort',            useClass: ImageRagService },
-    { provide: 'IConfidencePort',         useExisting: ConfidenceService },
+    { provide: 'LoggerPort',               useClass: ConsoleLoggerAdapter },
+    { provide: 'IEmbeddingPort',           useClass: OllamaEmbeddingAdapter },
+    { provide: 'IChatLlmPort',             useClass: OllamaChatAdapter },
+    { provide: 'ITextDocumentRepository',  useExisting: QdrantTextDocumentRepository },
+    { provide: 'IImageDocumentRepository', useExisting: QdrantImageDocumentRepository },
+    { provide: 'IStoragePort',             useExisting: S3StorageService },
+    { provide: 'IKnowledgeGraphPort',      useClass: Neo4jKnowledgeGraphService },
+    { provide: 'TextRagPort',              useClass: TextRagService },
+    { provide: 'ImageRagPort',             useClass: ImageRagService },
+    { provide: 'IConfidencePort',          useExisting: ConfidenceService },
+    { provide: 'IKnowledgeLinkRepository', useExisting: KnowledgeLinkPrismaRepository },
+    KnowledgeLinkPrismaRepository,
+    LinkService,
     ConfidenceService,
     AskQuestionHandler,
     UploadKnowledgeHandler,
@@ -78,11 +86,13 @@ import { ChatController } from './presentation/controllers/chat.controller';
     GetAllImagesHandler,
     GetImagesByKeywordHandler,
     RetrieveDocumentsHandler,
+    ExtractLinksHandler,
   ],
   controllers: [
-    RagDocumentsController, 
-    RagImagesController, 
-    ChatController
+    RagDocumentsController,
+    RagImagesController,
+    ChatController,
+    LinksController,
   ],
 })
 export class RagModule implements OnModuleInit {
@@ -98,18 +108,20 @@ export class RagModule implements OnModuleInit {
     private readonly getAllImages: GetAllImagesHandler,
     private readonly getImagesByKeyword: GetImagesByKeywordHandler,
     private readonly retrieveDocuments: RetrieveDocumentsHandler,
+    private readonly extractLinks: ExtractLinksHandler,
   ) {}
 
   onModuleInit(): void {
-    this.bus.register(AskQuestionCommand,    this.askQuestion);
-    this.bus.register(UploadKnowledgeCommand,this.uploadKnowledge);
-    this.bus.register(DeleteDocumentCommand, this.deleteDocument);
-    this.bus.register(ProcessImagesCommand,  this.processImages);
-    this.bus.register(DeleteImageCommand,    this.deleteImage);
-    this.bus.register(UploadFolderCommand,   this.uploadFolder);
-    this.bus.register(GetAllDocumentsQuery,  this.getAllDocuments);
-    this.bus.register(GetAllImagesQuery,     this.getAllImages);
-    this.bus.register(GetImagesByKeywordQuery,this.getImagesByKeyword);
-    this.bus.register(RetrieveDocumentsQuery,this.retrieveDocuments);
+    this.bus.register(AskQuestionCommand,     this.askQuestion);
+    this.bus.register(UploadKnowledgeCommand, this.uploadKnowledge);
+    this.bus.register(DeleteDocumentCommand,  this.deleteDocument);
+    this.bus.register(ProcessImagesCommand,   this.processImages);
+    this.bus.register(DeleteImageCommand,     this.deleteImage);
+    this.bus.register(UploadFolderCommand,    this.uploadFolder);
+    this.bus.register(GetAllDocumentsQuery,   this.getAllDocuments);
+    this.bus.register(GetAllImagesQuery,      this.getAllImages);
+    this.bus.register(GetImagesByKeywordQuery, this.getImagesByKeyword);
+    this.bus.register(RetrieveDocumentsQuery,  this.retrieveDocuments);
+    this.bus.register(IndexLinksCommand,      this.extractLinks)
   }
 }

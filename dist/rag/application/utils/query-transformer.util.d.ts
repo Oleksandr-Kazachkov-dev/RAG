@@ -6,6 +6,7 @@ export interface TransformedQuery {
     keywords: string[];
     isEntityQuery: boolean;
 }
+export declare function translateQueryToUkrainian(query: string): string[];
 export declare class QueryTransformer {
     private readonly ollamaService;
     constructor(ollamaService: OllamaService);

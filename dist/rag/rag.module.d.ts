@@ -7,6 +7,7 @@ import { ProcessImagesHandler } from './application/handlers/process-images.hand
 import { DeleteImageHandler } from './application/handlers/delete-image.handler';
 import { UploadFolderHandler } from './application/handlers/upload-folder.handler';
 import { GetAllDocumentsHandler, GetAllImagesHandler, GetImagesByKeywordHandler, RetrieveDocumentsHandler } from './application/queries/rag-query.handlers';
+import { ExtractLinksHandler } from './application/handlers/extract-links.handler';
 export declare class RagModule implements OnModuleInit {
     private readonly bus;
     private readonly askQuestion;
@@ -19,6 +20,7 @@ export declare class RagModule implements OnModuleInit {
     private readonly getAllImages;
     private readonly getImagesByKeyword;
     private readonly retrieveDocuments;
-    constructor(bus: CommandBusPort, askQuestion: AskQuestionHandler, uploadKnowledge: UploadKnowledgeHandler, deleteDocument: DeleteDocumentHandler, processImages: ProcessImagesHandler, deleteImage: DeleteImageHandler, uploadFolder: UploadFolderHandler, getAllDocuments: GetAllDocumentsHandler, getAllImages: GetAllImagesHandler, getImagesByKeyword: GetImagesByKeywordHandler, retrieveDocuments: RetrieveDocumentsHandler);
+    private readonly extractLinks;
+    constructor(bus: CommandBusPort, askQuestion: AskQuestionHandler, uploadKnowledge: UploadKnowledgeHandler, deleteDocument: DeleteDocumentHandler, processImages: ProcessImagesHandler, deleteImage: DeleteImageHandler, uploadFolder: UploadFolderHandler, getAllDocuments: GetAllDocumentsHandler, getAllImages: GetAllImagesHandler, getImagesByKeyword: GetImagesByKeywordHandler, retrieveDocuments: RetrieveDocumentsHandler, extractLinks: ExtractLinksHandler);
     onModuleInit(): void;
 }

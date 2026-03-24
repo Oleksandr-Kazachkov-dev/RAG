@@ -141,12 +141,25 @@ const QUESTION_STOP_WORDS = new Set([
     'typescript', 'javascript', 'kotlin', 'swift', 'golang', 'rust', 'php',
     'mongodb', 'postgres', 'redis', 'nginx', 'kubernetes', 'terraform',
 ]);
+const NON_PERSON_CONTEXT = new Set([
+    'company', 'компанія', 'компанії', 'компанію', 'компанієї',
+    'name', 'назва', 'назви', 'назву', 'named', 'called',
+    'brand', 'бренд', 'product', 'продукт', 'tool', 'інструмент',
+    'platform', 'платформа', 'system', 'систем', 'academy', 'академі',
+    'department', 'відділ', 'департамент', 'team', 'команд',
+    'origin', 'history', 'meaning', 'founded', 'заснування',
+    'onix',
+]);
 function isEntityQuery(query) {
     const trimmed = query.trim();
     if (trimmed.length > 80)
         return false;
     const tokens = trimmed.split(/\s+/);
     if (tokens.length > 5)
+        return false;
+    const lowerTokens = tokens.map(t => t.toLowerCase().replace(/[?!.,;:]/g, ''));
+    const hasNonPersonContext = lowerTokens.some(t => NON_PERSON_CONTEXT.has(t));
+    if (hasNonPersonContext)
         return false;
     const nameTokens = tokens.filter(t => /^[А-ЯІЇЄҐA-Z]/u.test(t) && !QUESTION_STOP_WORDS.has(t.toLowerCase()));
     return nameTokens.length >= 1;

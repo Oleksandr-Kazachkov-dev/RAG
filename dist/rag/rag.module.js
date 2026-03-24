@@ -48,9 +48,14 @@ const console_logger_adapter_1 = require("./shared/application/ports/console.log
 const ollama_chat_adapter_1 = require("./infrastructure/ollama/ollama-chat.adapter");
 const ollama_embedding_adapter_1 = require("./infrastructure/ollama/ollama-embedding.adapter");
 const confidence_service_1 = require("./application/services/confidence.service");
+const link_service_1 = require("./application/services/link.service");
 const chat_controller_1 = require("./presentation/controllers/chat.controller");
+const knowledge_link_prisma_repository_1 = require("./domain/repositories/knowledge-link-prisma.repository");
+const link_controller_1 = require("./presentation/controllers/link.controller");
+const extract_links_handler_1 = require("./application/handlers/extract-links.handler");
+const extract_links_command_1 = require("./application/commands/extract-links.command");
 let RagModule = class RagModule {
-    constructor(bus, askQuestion, uploadKnowledge, deleteDocument, processImages, deleteImage, uploadFolder, getAllDocuments, getAllImages, getImagesByKeyword, retrieveDocuments) {
+    constructor(bus, askQuestion, uploadKnowledge, deleteDocument, processImages, deleteImage, uploadFolder, getAllDocuments, getAllImages, getImagesByKeyword, retrieveDocuments, extractLinks) {
         this.bus = bus;
         this.askQuestion = askQuestion;
         this.uploadKnowledge = uploadKnowledge;
@@ -62,6 +67,7 @@ let RagModule = class RagModule {
         this.getAllImages = getAllImages;
         this.getImagesByKeyword = getImagesByKeyword;
         this.retrieveDocuments = retrieveDocuments;
+        this.extractLinks = extractLinks;
     }
     onModuleInit() {
         this.bus.register(ask_question_command_1.AskQuestionCommand, this.askQuestion);
@@ -74,6 +80,7 @@ let RagModule = class RagModule {
         this.bus.register(rag_queries_1.GetAllImagesQuery, this.getAllImages);
         this.bus.register(rag_queries_1.GetImagesByKeywordQuery, this.getImagesByKeyword);
         this.bus.register(rag_queries_1.RetrieveDocumentsQuery, this.retrieveDocuments);
+        this.bus.register(extract_links_command_1.IndexLinksCommand, this.extractLinks);
     }
 };
 exports.RagModule = RagModule;
@@ -99,6 +106,9 @@ exports.RagModule = RagModule = __decorate([
             { provide: 'TextRagPort', useClass: text_rag_service_1.TextRagService },
             { provide: 'ImageRagPort', useClass: image_rag_service_1.ImageRagService },
             { provide: 'IConfidencePort', useExisting: confidence_service_1.ConfidenceService },
+            { provide: 'IKnowledgeLinkRepository', useExisting: knowledge_link_prisma_repository_1.KnowledgeLinkPrismaRepository },
+            knowledge_link_prisma_repository_1.KnowledgeLinkPrismaRepository,
+            link_service_1.LinkService,
             confidence_service_1.ConfidenceService,
             ask_question_handler_1.AskQuestionHandler,
             upload_knowledge_handler_1.UploadKnowledgeHandler,
@@ -110,11 +120,13 @@ exports.RagModule = RagModule = __decorate([
             rag_query_handlers_1.GetAllImagesHandler,
             rag_query_handlers_1.GetImagesByKeywordHandler,
             rag_query_handlers_1.RetrieveDocumentsHandler,
+            extract_links_handler_1.ExtractLinksHandler,
         ],
         controllers: [
             rag_documents_controller_1.RagDocumentsController,
             image_controller_1.RagImagesController,
-            chat_controller_1.ChatController
+            chat_controller_1.ChatController,
+            link_controller_1.LinksController,
         ],
     }),
     __param(0, (0, common_1.Inject)('CommandBus')),
@@ -127,6 +139,7 @@ exports.RagModule = RagModule = __decorate([
         rag_query_handlers_1.GetAllDocumentsHandler,
         rag_query_handlers_1.GetAllImagesHandler,
         rag_query_handlers_1.GetImagesByKeywordHandler,
-        rag_query_handlers_1.RetrieveDocumentsHandler])
+        rag_query_handlers_1.RetrieveDocumentsHandler,
+        extract_links_handler_1.ExtractLinksHandler])
 ], RagModule);
 //# sourceMappingURL=rag.module.js.map

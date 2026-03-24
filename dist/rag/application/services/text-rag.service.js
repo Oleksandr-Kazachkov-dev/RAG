@@ -35,6 +35,16 @@ const query_classefire_util_1 = require("../utils/query-classefire.util");
 const MIN_CHUNK_TEXT_LENGTH = 80;
 const UPLOAD_CONCURRENCY = 3;
 const MAX_CONTEXT_CHARS = 6000;
+const KEYWORD_STOP_WORDS = new Set([
+    'what', 'is', 'are', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
+    'of', 'with', 'by', 'from', 'and', 'or', 'but', 'how', 'when',
+    'where', 'who', 'which', 'does', 'do', 'did', 'has', 'have', 'had',
+    'can', 'could', 'would', 'should', 'will', 'be', 'been', 'being',
+    'this', 'that', 'these', 'those', 'it', 'its', 'tell', 'me', 'about',
+    'що', 'як', 'де', 'коли', 'хто', 'чому', 'який', 'яка', 'яке', 'які',
+    'чи', 'або', 'та', 'це', 'є', 'у', 'в', 'на', 'до', 'по', 'про', 'за',
+]);
+const FACTUAL_SCORE_THRESHOLD_CAP = 0.65;
 let TextRagService = class TextRagService {
     constructor(configService, ollama, qdrantService, textRepository, conversationRepository, knowledgeGraph, logger, confidencePort) {
         this.configService = configService;
@@ -123,8 +133,12 @@ let TextRagService = class TextRagService {
         });
         let savedCount = 0;
         await (0, advanced_chunking_util_1.parentChildChunking)(text, async (chunk) => {
-            if (chunk.metadata.level === 0)
+            if (chunk.metadata.level === 0) {
+                const zeroEmbedding = new Array(768).fill(0);
+                const parentDoc = text_document_entity_1.TextDocument.create(chunk.metadata.chunkId, chunk.text, zeroEmbedding, embedModel, new Date(), chunk.metadata.chunkId, 0, chunk.metadata.startIndex, chunk.metadata.endIndex, chunk.metadata.childIds, undefined, undefined, keywords);
+                await this.textRepository.saveMany([parentDoc]);
                 return;
+            }
             const hasUrl = /https?:\/\/\S+|\b[\w-]+\.[\w-]+\.\w{2,}\b/.test(chunk.text);
             if (chunk.text.trim().length < MIN_CHUNK_TEXT_LENGTH && !hasUrl) {
                 this.logger.log(`Skipping micro-chunk (${chunk.text.trim().length} chars): "${chunk.text.trim().slice(0, 60)}"`);
@@ -334,17 +348,28 @@ let TextRagService = class TextRagService {
         if (useQueryTransformation) {
             try {
                 const transformed = await this.queryTransformer.transformQuery(query);
-                keywords = transformed.keywords;
-                queriesToEmbed = [
-                    transformed.original,
-                    ...transformed.expanded,
-                    ...transformed.rephrased,
-                ].filter(Boolean).slice(0, 5);
+                console.log('transformed :>> ', transformed);
+                keywords = transformed.keywords.filter(kw => kw.length > 2 && !KEYWORD_STOP_WORDS.has(kw.toLowerCase()));
+                const isShortQuery = query.trim().split(/\s+/).length <= 3;
+                queriesToEmbed = isShortQuery
+                    ? [transformed.original, ...transformed.expanded.slice(0, 1)].filter(Boolean)
+                    : [
+                        transformed.original,
+                        ...transformed.expanded.slice(0, 2),
+                        ...transformed.rephrased.slice(0, 1),
+                    ].filter(Boolean).slice(0, 4);
+                const uaTranslations = (0, query_transformer_util_1.translateQueryToUkrainian)(query);
+                if (uaTranslations.length > 0) {
+                    this.logger.log('EN→UA query translation', { query, uaTranslations });
+                    queriesToEmbed = [...new Set([...queriesToEmbed, ...uaTranslations])].slice(0, 6);
+                }
             }
             catch {
                 keywords = [];
             }
         }
+        console.log('keywords :>> ', keywords);
+        console.log('queriesToEmbed :>> ', queriesToEmbed);
         if (useConversationMemory && sessionId) {
             const history = await this.conversationRepository.getHistory(sessionId, 2);
             if (history.length > 0) {
@@ -360,6 +385,7 @@ let TextRagService = class TextRagService {
             const allSearchResults = await Promise.all(embeddings.map(emb => this.hybridSearch.search(collectionName, new embedding_vo_1.Embedding((0, embedding_util_1.extractEmbedding)(emb)), keywords, effectivenessLimit, {
                 searchMode,
                 minTextLength: MIN_CHUNK_TEXT_LENGTH,
+                originalQuery: query,
                 ...(scoreThreshold !== undefined ? { scoreThreshold } : {}),
             })));
             const validResults = allSearchResults.filter(Boolean);
@@ -372,6 +398,45 @@ let TextRagService = class TextRagService {
                     if (!existing || r.hybridScore > existing.hybridScore) {
                         mergedMap.set(r.id, r);
                     }
+                }
+            }
+            const uaTranslations = (0, query_transformer_util_1.translateQueryToUkrainian)(query);
+            if (uaTranslations.length > 0 && collectionName) {
+                try {
+                    const uaEmbeddings = await Promise.all(uaTranslations.map(ua => this.ollama.embed(ua)));
+                    const uaSearchResults = await Promise.all(uaEmbeddings.map(emb => this.qdrantService.search(collectionName, {
+                        vector: (0, embedding_util_1.extractEmbedding)(emb),
+                        limit: effectivenessLimit,
+                        searchMode: 'wide',
+                        score_threshold: null,
+                    })));
+                    let uaAdded = 0;
+                    for (const points of uaSearchResults) {
+                        for (const p of points) {
+                            const id = p.id.toString();
+                            const text = p.payload?.text ?? '';
+                            if (text.trim().length < MIN_CHUNK_TEXT_LENGTH)
+                                continue;
+                            const uaScore = p.score ?? 0;
+                            const existing = mergedMap.get(id);
+                            if (!existing || uaScore > existing.hybridScore) {
+                                mergedMap.set(id, {
+                                    id,
+                                    text,
+                                    parentText: p.payload?.parentText,
+                                    parentId: p.payload?.parentId,
+                                    vectorScore: uaScore,
+                                    keywordScore: 0,
+                                    hybridScore: uaScore,
+                                });
+                                uaAdded++;
+                            }
+                        }
+                    }
+                    this.logger.log('UA vector search merged', { uaAdded, total: mergedMap.size });
+                }
+                catch (err) {
+                    this.logger.warn('UA vector search failed', { error: err?.message });
                 }
             }
             results = [...mergedMap.values()]
@@ -405,6 +470,7 @@ let TextRagService = class TextRagService {
                 const hybridFallback = await this.hybridSearch.search(collectionName, primaryEmbedding, keywords, effectiveLimit * 3, {
                     searchMode,
                     minTextLength: MIN_CHUNK_TEXT_LENGTH,
+                    originalQuery: query,
                     ...(scoreThreshold !== undefined ? { scoreThreshold } : {}),
                 });
                 if (!hybridFallback)
@@ -424,6 +490,7 @@ let TextRagService = class TextRagService {
             results = reranked.map(r => ({ id: r.item.id, text: r.item.text, score: r.finalScore }));
         }
         results = results.filter(r => r.score > 0.1);
+        results = results.filter(r => r.level !== 0);
         results = results.slice(0, effectiveLimit);
         if (searchMode === 'entity') {
             const nameTokenGroups = this.extractNameTokens(query);
@@ -518,7 +585,7 @@ let TextRagService = class TextRagService {
       - писати як готове пояснення для людини
       - об'єднувати інформацію з різних частин контексту
 
-      Якщо інформації немає:
+      Якщо інформації немає — відповідай:
       "Інформація відсутня в базі знань"
 
       Питання:
@@ -538,9 +605,10 @@ let TextRagService = class TextRagService {
 
       ЗАВДАННЯ:
 
-      1. Проаналізуй весь контекст
+      1. Уважно прочитай ВЕСЬ контекст — навіть якщо відповідь згадана лише побіжно
       2. Визнач точну відповідь на питання
-      3. Якщо інформація розкидана — ОБ'ЄДНАЙ її
+      3. Якщо інформація розкидана по кількох місцях — ОБ'ЄДНАЙ її в одну відповідь
+      4. Якщо є часткова інформація — дай часткову відповідь, не мовчи
 
       ФОРМАТ:
 
@@ -554,12 +622,15 @@ let TextRagService = class TextRagService {
       - писати "у контексті сказано"
       - давати список фрагментів
       - копіювати шматки тексту без узагальнення
+      - відмовлятись відповідати якщо є хоч якась релевантна інформація
 
       ✅ ПОТРІБНО:
       - сформулювати єдину чітку відповідь
+      - якщо інформація часткова — відповісти на те, що є, і додати:
+        "Для уточнення зверніться до відповідного відділу або менеджера."
 
-      Якщо недостатньо даних:
-      "Недостатньо інформації у базі знань"
+      Тільки якщо контекст ВЗАГАЛІ не містить нічого по темі питання:
+      "Ця інформація відсутня в базі знань. Зверніться до HR або свого менеджера."
 
       Питання:
       ${query}
@@ -582,6 +653,7 @@ let TextRagService = class TextRagService {
       2. Визнач усі ключові теми
       3. ОБ'ЄДНАЙ інформацію у логічні блоки
       4. Побудуй цілісне пояснення теми
+      5. Якщо контекст містить лише частину інформації — розкрий те, що є, повністю
 
       ФОРМАТ ВІДПОВІДІ:
 
@@ -603,13 +675,13 @@ let TextRagService = class TextRagService {
       - список знайдених шматків тексту
       - посилання на документи
       - повтори
+      - відмовлятись відповідати через "неповний контекст"
 
       ✅ ПОТРІБНО:
       - писати як готову статтю / інструкцію
       - зшивати інформацію з різних місць
       - використовувати максимум контексту
-
-      Якщо частина інформації відсутня — просто пропусти її.
+      - якщо якийсь аспект не покритий — просто пропусти його без згадки
 
       Питання:
       ${query}
@@ -659,13 +731,24 @@ let TextRagService = class TextRagService {
         if (!Array.isArray(rawRetrieved))
             return { answer: String(rawRetrieved) };
         const configThreshold = ragConfig?.textRagScoreThreshold;
-        const applyConfigFilter = classification.type === 'factual';
-        const filtered = configThreshold && applyConfigFilter
-            ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
+        const applyConfigFilter = classification.type === 'factual'
+            && classification.confidence > 0.8;
+        const effectiveThreshold = classification.type === 'factual'
+            ? Math.min(p.scoreThreshold, FACTUAL_SCORE_THRESHOLD_CAP)
+            : p.scoreThreshold;
+        const filtered = applyConfigFilter
+            ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
             : rawRetrieved;
+        const postFilterResults = filtered.length > 0 ? filtered : (() => {
+            this.logger.warn('Score filter removed all results, falling back to top-3 unfiltered', {
+                rawCount: rawRetrieved.length,
+                threshold: effectiveThreshold,
+            });
+            return rawRetrieved.slice(0, 3);
+        })();
         const retrieved = p.useParentExpansion
-            ? await this.expandToParentContext(filtered)
-            : filtered;
+            ? await this.expandToParentContext(postFilterResults)
+            : postFilterResults;
         const useKG = options?.useKnowledgeGraph ?? p.useKnowledgeGraph;
         let kgContext;
         if (useKG)
@@ -773,12 +856,18 @@ let TextRagService = class TextRagService {
             yield { event: 'done', metadata: { relevantChunks: 0, citations: [] } };
             return;
         }
-        const filtered = p.scoreThreshold
-            ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
+        const effectiveThreshold = classification.type === 'factual'
+            ? Math.min(p.scoreThreshold, FACTUAL_SCORE_THRESHOLD_CAP)
+            : p.scoreThreshold;
+        const applyFilter = classification.type === 'factual'
+            && classification.confidence > 0.8;
+        const preFiltered = applyFilter && effectiveThreshold
+            ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
             : rawRetrieved;
+        const postFilterResults = preFiltered.length > 0 ? preFiltered : rawRetrieved.slice(0, 3);
         const retrieved = p.useParentExpansion
-            ? await this.expandToParentContext(filtered)
-            : filtered;
+            ? await this.expandToParentContext(postFilterResults)
+            : postFilterResults;
         if (retrieved.length === 0) {
             yield {
                 event: 'metadata',
@@ -794,8 +883,8 @@ let TextRagService = class TextRagService {
             kgContext = await this.queryKnowledgeGraph(query);
         const context = retrieved
             .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-            .map(doc => doc.text)
             .slice(0, 8)
+            .map(doc => doc.text)
             .join('\n\n');
         let prompt = this.buildPrompt(classification.type, context, query);
         if (kgContext) {
@@ -857,7 +946,9 @@ let TextRagService = class TextRagService {
                 grounded: verification.grounded,
                 verdict: verification.llmVerdict,
             });
-            if (!verification.grounded && verification.llmVerdict === 'NO') {
+            if (!verification.grounded &&
+                verification.llmVerdict === 'NO' &&
+                verification.confidence.score < 0.4) {
                 fullAnswer = 'Немає релевантної відповіді';
                 yield { event: 'correction', correctedAnswer: fullAnswer, reason: 'hallucination' };
             }

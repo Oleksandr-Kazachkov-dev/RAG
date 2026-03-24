@@ -4,7 +4,7 @@ exports.QueryClassifier = void 0;
 const PROFILE_BY_TYPE = {
     entity: {
         limit: 16,
-        scoreThreshold: 0.5,
+        scoreThreshold: 0.6,
         searchMode: 'entity',
         useHybridSearch: true,
         useQueryTransformation: true,
@@ -23,8 +23,8 @@ const PROFILE_BY_TYPE = {
         seed: undefined,
     },
     factual: {
-        limit: 10,
-        scoreThreshold: 0.8,
+        limit: 15,
+        scoreThreshold: 0.9,
         searchMode: 'balanced',
         useHybridSearch: true,
         useQueryTransformation: true,
@@ -43,8 +43,8 @@ const PROFILE_BY_TYPE = {
         seed: undefined,
     },
     wide: {
-        limit: 6,
-        scoreThreshold: 0.72,
+        limit: 12,
+        scoreThreshold: 0.62,
         searchMode: 'wide',
         useHybridSearch: true,
         useQueryTransformation: true,
@@ -63,37 +63,62 @@ const PROFILE_BY_TYPE = {
         seed: undefined,
     },
 };
+function preGuardClassify(query) {
+    const q = query.toLowerCase().replace(/[?!.,;:]/g, '').trim();
+    const isNameOriginQuery = /\b(why|what|how)\b.{0,30}\b(name|called|named|mean|origin|history|founded|create)\b/i.test(q) ||
+        /\b(name|назв).{0,20}\b(company|компан|brand|бренд)\b/i.test(q) ||
+        /\b(company|компан).{0,20}\b(name|назв|called|mean)\b/i.test(q);
+    if (isNameOriginQuery)
+        return 'factual';
+    const isAboutSomething = /\b(tell me about|describe|overview of|what is|what are)\b/i.test(q) ||
+        /\b(розкажи|опиши|що таке|що це)\b/i.test(q);
+    const hasNonPersonSubject = /\b(company|компан|organization|product|tool|department|відділ|команд|team|process|процес|academy|академі|platform|system|системи|software)\b/i.test(q);
+    if (isAboutSomething && hasNonPersonSubject)
+        return 'wide';
+    return null;
+}
 class QueryClassifier {
     constructor(ollama) {
         this.ollama = ollama;
     }
     async classify(query) {
+        const preGuard = preGuardClassify(query);
+        if (preGuard !== null) {
+            return this.build(preGuard, 0.9);
+        }
         const prompt = `You are a query classifier for a Ukrainian corporate knowledge base RAG system.
 Classify the query into EXACTLY ONE type. Reply ONLY with valid JSON — no markdown, no commentary.
 
 TYPES:
 
-  "entity"  — lookup of a SPECIFIC NAMED PERSON only.
-              Use ONLY when the subject is clearly a human individual (name, surname, nickname).
+  "entity"  — lookup of a SPECIFIC NAMED HUMAN PERSON only.
+              Use ONLY when the subject is clearly an individual human being (first name, surname, nickname).
               Examples: "Хто такий Іван Петров?", "Find Olena Kovalenko", "Чеча",
                         "Розкажи про Дениса Шереметова", "що відомо про Марію Іваненко"
 
-              ❌ NOT entity: queries about departments, teams, tools, processes, companies.
-              ❌ NOT entity: "розкажи про node департамент", "що робить HR відділ"
+              ❌ NEVER "entity" for: company names, product names, tool names, department names,
+                 brand names, or any non-human subject — even if they look like proper nouns.
+              ❌ NOT entity: "розкажи про node департамент", "що робить HR відділ",
+                             "why name company onix", "що таке onix", "tell me about onix",
+                             "why is it called onix", "what does onix mean"
 
   "factual" — expects ONE short answer: a link, date, number, yes/no, policy rule.
+              Also use for: questions about company name origin, founding date, brand meaning.
               Examples: "Який стек у backend?", "Дай посилання на hrm", "Коли salary review?",
                         "Скільки днів відпустки?", "Чи є sick leave?", "Як підключитись до wifi?",
                         "Коли заснована компанія?", "Як оплатити коворкінг з фоп?",
-                        "А як тепер аппрувиться лікарняний?"
+                        "А як тепер аппрувиться лікарняний?",
+                        "why name company onix?", "what does the name onix mean?",
+                        "when was onix founded?", "why is the company called onix?"
 
   "wide"    — comprehensive overview, listing, procedural, or comparative.
-              Use for DEPARTMENT / TEAM / TOOL / PROCESS overviews, and step-by-step guides.
+              Use for DEPARTMENT / TEAM / TOOL / PROCESS / COMPANY overviews, and step-by-step guides.
               Examples: "Розкажи про node департамент", "Що робить QA команда?",
                         "Як оформити відпустку?", "Який lifecycle задачі?",
                         "Як можна збільшити зарплату?", "Чи можна працювати з іншої країни?",
                         "Перелічи всіх розробників", "Які команди є в компанії?",
-                        "Розкажи про HR відділ", "Що таке onix academy?"
+                        "Розкажи про HR відділ", "Що таке onix academy?",
+                        "tell me about onix company", "describe the history of onix"
 
 Query: "${query}"
 

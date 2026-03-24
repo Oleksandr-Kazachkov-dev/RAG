@@ -94,6 +94,7 @@ export class HybridSearchEngine {
       searchMode?:      SearchMode | 'entity';
       scoreThreshold?:  number;
       minTextLength?:   number;
+      originalQuery?:   string;  // raw query for direct text scroll
     } = {},
   ): Promise<HybridSearchResult[] | null> {
     const mode = options.searchMode ?? 'balanced';
@@ -118,10 +119,63 @@ export class HybridSearchEngine {
     const useKeywordScroll = (mode === 'entity' || mode === 'balanced' || mode === 'wide') && keywords.length > 0;
     let keywordScrollPoints: Array<{ id: string; payload: Record<string, any> }> = [];
     if (useKeywordScroll) {
-      const shouldClauses = keywords.slice(0, 15).map(kw => ({
+      // Search 1: by contextKeywords field (keyword index)
+      const contextKwClauses = keywords.slice(0, 15).map(kw => ({
         key:   'contextKeywords',
         match: { value: kw.toLowerCase() },
       }));
+
+      // Search 2: by full-text on the text field (text index)
+      // Use words from the original query directly — most reliable for cross-lingual match
+      const queryWords = options.originalQuery
+        ? [...new Set(
+            options.originalQuery
+              .toLowerCase()
+              .replace(/[?!.,;:'"]/g, '')
+              .split(/\s+/)
+              .filter(w => w.length > 2),
+          )]
+        : [];
+
+      // Expand UA phrases to EN equivalents so English chunks are found
+      const UA_TO_EN_SCROLL: Record<string, string[]> = {
+        'назва компанії':                    ['company', 'name', 'brand', 'called', 'named'],
+        'назва та історія компанії':         ['company', 'history', 'name', 'founded', 'established'],
+        'заснування':                        ['founded', 'established', 'created'],
+        'чому компанія так називається':     ['company', 'name', 'called', 'named', 'why'],
+        'що означає назва компанії':         ['name', 'means', 'meaning', 'company'],
+        'коли заснована компанія':           ['founded', 'established', 'created'],
+        'історія компанії':                  ['history', 'company', 'established', 'founded'],
+        'розкажи про':                       ['about', 'company', 'overview'],
+        'онбординг адаптація перший день':   ['onboarding', 'first', 'day', 'adaptation'],
+        'дистанційна робота remote':         ['remote', 'work', 'abroad', 'country'],
+        'коворкінг оренда місця':            ['coworking', 'office', 'space'],
+        'технічна підтримка help desk':      ['support', 'help', 'desk', 'technical'],
+        'лікарняний sick leave':             ['sick', 'leave', 'medical'],
+        'кількість днів відпустки':          ['vacation', 'days', 'leave', 'annual'],
+      };
+
+      const expandedForScroll = new Set<string>([
+        // Words directly from the original query (highest priority)
+        ...queryWords,
+        // Expanded from keywords + UA→EN mapping
+        ...keywords.flatMap(kw => {
+          const kl = kw.toLowerCase();
+          const words = kl.split(/\s+/).filter(w => w.length > 2);
+          const enEquiv = UA_TO_EN_SCROLL[kl] ?? [];
+          return [...words, ...enEquiv];
+        }),
+      ]);
+
+      // Split multi-word keywords into single words and search text directly
+      const textSearchWords = [...expandedForScroll].filter(w => w.length > 2).slice(0, 20);
+
+      const textClauses = textSearchWords.map(word => ({
+        key:   'text',
+        match: { text: word },
+      }));
+
+      const allClauses = [...contextKwClauses, ...textClauses];
 
       try {
         const scrollResult = await this.qdrantService.scroll(collectionName, {
@@ -129,7 +183,7 @@ export class HybridSearchEngine {
           with_payload: true,
           filter: {
             must:   [{ key: 'textLength', range: { gte: 20 } }],
-            should: shouldClauses,
+            should: allClauses,
           },
         });
         keywordScrollPoints = (scrollResult.points ?? []).map(p => ({
@@ -178,6 +232,30 @@ export class HybridSearchEngine {
     const working = meaningful.length > 0 ? meaningful : unified;
 
     if (keywords.length > 0) {
+      // Expand keywords: for multi-word UA phrases, also include each word separately
+      // so "назва компанії" → also matches "company", "name", "назва", "компанія"
+      const UA_TO_EN_KEYWORD_MAP: Record<string, string[]> = {
+        'назва компанії': ['company name', 'company', 'name', 'brand', 'called'],
+        'назва та історія компанії': ['company', 'history', 'name', 'founded', 'established'],
+        'заснування': ['founded', 'established', 'created', 'history'],
+        'чому компанія так називається': ['company', 'name', 'called', 'why', 'named'],
+        'що означає назва компанії': ['name', 'meaning', 'means', 'company'],
+        'коли заснована компанія': ['founded', 'established', 'created', '2000'],
+        'історія компанії': ['history', 'company', 'established', 'founded'],
+        'розкажи про': ['about', 'company', 'overview'],
+      };
+
+      const expandedKeywords = new Set<string>(keywords.map(k => k.toLowerCase()));
+      for (const kw of keywords) {
+        const kl = kw.toLowerCase();
+        // Add individual words from multi-word keywords
+        kl.split(/\s+/).filter(w => w.length > 2).forEach(w => expandedKeywords.add(w));
+        // Add EN translations for known UA phrases
+        const enVariants = UA_TO_EN_KEYWORD_MAP[kl];
+        if (enVariants) enVariants.forEach(v => expandedKeywords.add(v));
+      }
+      const allKeywords = [...expandedKeywords];
+
       const contextKwMap = new Map<string, string[]>();
       for (const r of vectorResults) {
         const ck = (r.payload?.contextKeywords as string[] | undefined) ?? [];
@@ -195,7 +273,7 @@ export class HybridSearchEngine {
         const textLower  = doc.text.toLowerCase();
         const contextKws = contextKwMap.get(doc.id) ?? [];
 
-        const matchedKws = keywords.filter(kw => {
+        const matchedKws = allKeywords.filter(kw => {
           const kl = kw.toLowerCase();
           return textLower.includes(kl) || contextKws.some(ck => ck.includes(kl));
         });
@@ -203,7 +281,7 @@ export class HybridSearchEngine {
         if (matchedKws.length >= minKeywordMatch) {
           doc.keywordScore =
             bm25Score(textLower, matchedKws, avgDocLen) +
-            matchedKws.length * 0.5;
+            Math.min(matchedKws.length, allKeywords.length) * 0.5;
 
           const urlsInText = (doc.text.match(/https?:\/\/\S+|\b[\w-]+\.[\w.-]+\.\w{2,}\b/g) ?? [])
             .map(u => u.toLowerCase());

@@ -26,7 +26,7 @@ import {
   parentChildChunking,
   ChunkMetadata,
 } from '../utils/advanced-chunking.util';
-import { QueryTransformer } from '../utils/query-transformer.util';
+import { QueryTransformer, translateQueryToUkrainian } from '../utils/query-transformer.util';
 import { Reranker } from '../utils/reranker.util';
 import { HybridSearchEngine, HybridSearchResult } from '../utils/hybrid-search.util';
 import { ContextualCompressor } from '../utils/contextual-compression.util';
@@ -50,6 +50,19 @@ import { IConfidencePort } from '../../domain/ports/confidence.port';
 const MIN_CHUNK_TEXT_LENGTH = 80;
 const UPLOAD_CONCURRENCY = 3;
 const MAX_CONTEXT_CHARS = 6000;
+
+const KEYWORD_STOP_WORDS = new Set([
+  'what', 'is', 'are', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
+  'of', 'with', 'by', 'from', 'and', 'or', 'but', 'how', 'when',
+  // NOTE: 'why' removed — it helps route origin/reason queries correctly
+  'where', 'who', 'which', 'does', 'do', 'did', 'has', 'have', 'had',
+  'can', 'could', 'would', 'should', 'will', 'be', 'been', 'being',
+  'this', 'that', 'these', 'those', 'it', 'its', 'tell', 'me', 'about',
+  'що', 'як', 'де', 'коли', 'хто', 'чому', 'який', 'яка', 'яке', 'які',
+  'чи', 'або', 'та', 'це', 'є', 'у', 'в', 'на', 'до', 'по', 'про', 'за',
+]);
+
+const FACTUAL_SCORE_THRESHOLD_CAP = 0.65;
 
 interface TrackCitation {
   id: string;
@@ -206,7 +219,30 @@ export class TextRagService implements TextRagPort {
     await parentChildChunking(
       text,
       async (chunk: { text: string; metadata: ChunkMetadata }) => {
-        if (chunk.metadata.level === 0) return;
+        // Level 0 = parent block. Store it in Qdrant WITHOUT a real embedding
+        // (zero vector) so expandToParentContext can fetch its text via getPoints,
+        // but it will never surface in similarity search (score ≈ 0).
+        if (chunk.metadata.level === 0) {
+          const zeroEmbedding = new Array(768).fill(0); // nomic-embed-text dim
+          const parentDoc = TextDocument.create(
+            // Use chunkId as the id so getPoints(parentId) works directly
+            chunk.metadata.chunkId,
+            chunk.text,
+            zeroEmbedding,
+            embedModel,
+            new Date(),
+            chunk.metadata.chunkId,
+            0,
+            chunk.metadata.startIndex,
+            chunk.metadata.endIndex,
+            chunk.metadata.childIds,
+            undefined,
+            undefined,
+            keywords,
+          );
+          await this.textRepository.saveMany([parentDoc]);
+          return;
+        }
 
         const hasUrl = /https?:\/\/\S+|\b[\w-]+\.[\w-]+\.\w{2,}\b/.test(chunk.text);
         if (chunk.text.trim().length < MIN_CHUNK_TEXT_LENGTH && !hasUrl) {
@@ -489,16 +525,38 @@ export class TextRagService implements TextRagPort {
     if (useQueryTransformation) {
       try {
         const transformed = await this.queryTransformer.transformQuery(query);
-        keywords          = transformed.keywords;
-        queriesToEmbed    = [
-          transformed.original,
-          ...transformed.expanded,
-          ...transformed.rephrased,
-        ].filter(Boolean).slice(0, 5);
+        console.log('transformed :>> ', transformed);
+
+
+        keywords = transformed.keywords.filter(
+          kw => kw.length > 2 && !KEYWORD_STOP_WORDS.has(kw.toLowerCase()),
+        );
+
+
+        const isShortQuery = query.trim().split(/\s+/).length <= 3;
+        queriesToEmbed = isShortQuery
+          ? [transformed.original, ...transformed.expanded.slice(0, 1)].filter(Boolean)
+          : [
+              transformed.original,
+              ...transformed.expanded.slice(0, 2),
+              ...transformed.rephrased.slice(0, 1),
+            ].filter(Boolean).slice(0, 4);
+
+        // For English queries: inject Ukrainian equivalents so vector search
+        // hits Ukrainian knowledge chunks (documents are stored in Ukrainian).
+        const uaTranslations = translateQueryToUkrainian(query);
+        if (uaTranslations.length > 0) {
+          this.logger.log('EN→UA query translation', { query, uaTranslations });
+          queriesToEmbed = [...new Set([...queriesToEmbed, ...uaTranslations])].slice(0, 6);
+        }
+
       } catch {
         keywords = [];
       }
     }
+
+    console.log('keywords :>> ', keywords);
+    console.log('queriesToEmbed :>> ', queriesToEmbed);
 
     if (useConversationMemory && sessionId) {
       const history = await this.conversationRepository.getHistory(sessionId, 2);
@@ -527,7 +585,8 @@ export class TextRagService implements TextRagPort {
             effectivenessLimit,
             {
               searchMode,
-              minTextLength: MIN_CHUNK_TEXT_LENGTH,
+              minTextLength:  MIN_CHUNK_TEXT_LENGTH,
+              originalQuery:  query,
               ...(scoreThreshold !== undefined ? { scoreThreshold } : {}),
             },
           ),
@@ -546,6 +605,55 @@ export class TextRagService implements TextRagPort {
           }
         }
       }
+
+      // For English queries: run separate vector search with UA translations.
+      // UA embeddings are semantically closer to UA/EN knowledge chunks than EN query embeddings.
+      // These results are merged with priority — they overwrite existing lower-scored entries.
+      const uaTranslations = translateQueryToUkrainian(query);
+      if (uaTranslations.length > 0 && collectionName) {
+        try {
+          const uaEmbeddings = await Promise.all(
+            uaTranslations.map(ua => this.ollama.embed(ua)),
+          );
+          const uaSearchResults = await Promise.all(
+            uaEmbeddings.map(emb =>
+              this.qdrantService.search(collectionName, {
+                vector:          extractEmbedding(emb),
+                limit:           effectivenessLimit,
+                searchMode:      'wide',
+                score_threshold: null,
+              }),
+            ),
+          );
+          let uaAdded = 0;
+          for (const points of uaSearchResults) {
+            for (const p of points) {
+              const id   = p.id.toString();
+              const text = (p.payload?.text as string) ?? '';
+              if (text.trim().length < MIN_CHUNK_TEXT_LENGTH) continue;
+              const uaScore = p.score ?? 0;
+              const existing = mergedMap.get(id);
+              // Always upsert: UA vector score is more reliable for UA/EN chunks
+              if (!existing || uaScore > existing.hybridScore) {
+                mergedMap.set(id, {
+                  id,
+                  text,
+                  parentText:   p.payload?.parentText as string | undefined,
+                  parentId:     p.payload?.parentId  as string | undefined,
+                  vectorScore:  uaScore,
+                  keywordScore: 0,
+                  hybridScore:  uaScore,
+                });
+                uaAdded++;
+              }
+            }
+          }
+          this.logger.log('UA vector search merged', { uaAdded, total: mergedMap.size });
+        } catch (err: any) {
+          this.logger.warn('UA vector search failed', { error: err?.message });
+        }
+      }
+
       results = [...mergedMap.values()]
         .sort((a, b) => b.hybridScore - a.hybridScore)
         .map(r => ({ id: r.id, text: r.text, score: r.hybridScore }));
@@ -588,6 +696,7 @@ export class TextRagService implements TextRagPort {
           {
             searchMode,
             minTextLength: MIN_CHUNK_TEXT_LENGTH,
+            originalQuery: query,
             ...(scoreThreshold !== undefined ? { scoreThreshold } : {}),
           },
         );
@@ -608,7 +717,9 @@ export class TextRagService implements TextRagPort {
       results = reranked.map(r => ({ id: r.item.id, text: r.item.text, score: r.finalScore }));
     }
 
+    // Filter out parent stubs (level 0, stored with zero vector — score always near 0)
     results = results.filter(r => r.score > 0.1);
+    results = results.filter(r => (r as any).level !== 0);
     results = results.slice(0, effectiveLimit);
 
     if (searchMode === 'entity') {
@@ -719,7 +830,7 @@ export class TextRagService implements TextRagPort {
       - писати як готове пояснення для людини
       - об'єднувати інформацію з різних частин контексту
 
-      Якщо інформації немає:
+      Якщо інформації немає — відповідай:
       "Інформація відсутня в базі знань"
 
       Питання:
@@ -739,9 +850,10 @@ export class TextRagService implements TextRagPort {
 
       ЗАВДАННЯ:
 
-      1. Проаналізуй весь контекст
+      1. Уважно прочитай ВЕСЬ контекст — навіть якщо відповідь згадана лише побіжно
       2. Визнач точну відповідь на питання
-      3. Якщо інформація розкидана — ОБ'ЄДНАЙ її
+      3. Якщо інформація розкидана по кількох місцях — ОБ'ЄДНАЙ її в одну відповідь
+      4. Якщо є часткова інформація — дай часткову відповідь, не мовчи
 
       ФОРМАТ:
 
@@ -755,12 +867,15 @@ export class TextRagService implements TextRagPort {
       - писати "у контексті сказано"
       - давати список фрагментів
       - копіювати шматки тексту без узагальнення
+      - відмовлятись відповідати якщо є хоч якась релевантна інформація
 
       ✅ ПОТРІБНО:
       - сформулювати єдину чітку відповідь
+      - якщо інформація часткова — відповісти на те, що є, і додати:
+        "Для уточнення зверніться до відповідного відділу або менеджера."
 
-      Якщо недостатньо даних:
-      "Недостатньо інформації у базі знань"
+      Тільки якщо контекст ВЗАГАЛІ не містить нічого по темі питання:
+      "Ця інформація відсутня в базі знань. Зверніться до HR або свого менеджера."
 
       Питання:
       ${query}
@@ -783,6 +898,7 @@ export class TextRagService implements TextRagPort {
       2. Визнач усі ключові теми
       3. ОБ'ЄДНАЙ інформацію у логічні блоки
       4. Побудуй цілісне пояснення теми
+      5. Якщо контекст містить лише частину інформації — розкрий те, що є, повністю
 
       ФОРМАТ ВІДПОВІДІ:
 
@@ -804,13 +920,13 @@ export class TextRagService implements TextRagPort {
       - список знайдених шматків тексту
       - посилання на документи
       - повтори
+      - відмовлятись відповідати через "неповний контекст"
 
       ✅ ПОТРІБНО:
       - писати як готову статтю / інструкцію
       - зшивати інформацію з різних місць
       - використовувати максимум контексту
-
-      Якщо частина інформації відсутня — просто пропусти її.
+      - якщо якийсь аспект не покритий — просто пропусти його без згадки
 
       Питання:
       ${query}
@@ -889,16 +1005,34 @@ export class TextRagService implements TextRagPort {
     if (typeof rawRetrieved === 'string') return { answer: rawRetrieved };
     if (!Array.isArray(rawRetrieved)) return { answer: String(rawRetrieved) };
 
-    const configThreshold   = ragConfig?.textRagScoreThreshold;
-    const applyConfigFilter = classification.type === 'factual';
+    const configThreshold = ragConfig?.textRagScoreThreshold;
 
-    const filtered = configThreshold && applyConfigFilter
-      ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
+
+
+    const applyConfigFilter = classification.type === 'factual'
+      && classification.confidence > 0.8;
+
+    const effectiveThreshold = classification.type === 'factual'
+      ? Math.min(p.scoreThreshold, FACTUAL_SCORE_THRESHOLD_CAP)
+      : p.scoreThreshold;
+
+    // Apply threshold filter only for high-confidence factual queries to avoid over-filtering
+    const filtered = applyConfigFilter
+      ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
       : rawRetrieved;
 
+
+    const postFilterResults = filtered.length > 0 ? filtered : (() => {
+      this.logger.warn('Score filter removed all results, falling back to top-3 unfiltered', {
+        rawCount: rawRetrieved.length,
+        threshold: effectiveThreshold,
+      });
+      return rawRetrieved.slice(0, 3);
+    })();
+
     const retrieved = p.useParentExpansion
-      ? await this.expandToParentContext(filtered)
-      : filtered;
+      ? await this.expandToParentContext(postFilterResults)
+      : postFilterResults;
 
     const useKG = options?.useKnowledgeGraph ?? p.useKnowledgeGraph;
     let kgContext: string | undefined;
@@ -1049,13 +1183,24 @@ export class TextRagService implements TextRagPort {
       return;
     }
 
-    const filtered = p.scoreThreshold
-      ? rawRetrieved.filter(el => (el.score ?? 0) >= p.scoreThreshold)
+
+    const effectiveThreshold = classification.type === 'factual'
+      ? Math.min(p.scoreThreshold, FACTUAL_SCORE_THRESHOLD_CAP)
+      : p.scoreThreshold;
+
+    const applyFilter = classification.type === 'factual'
+      && classification.confidence > 0.8;
+
+    const preFiltered = applyFilter && effectiveThreshold
+      ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
       : rawRetrieved;
 
+
+    const postFilterResults = preFiltered.length > 0 ? preFiltered : rawRetrieved.slice(0, 3);
+
     const retrieved = p.useParentExpansion
-      ? await this.expandToParentContext(filtered)
-      : filtered;
+      ? await this.expandToParentContext(postFilterResults)
+      : postFilterResults;
 
     if (retrieved.length === 0) {
       yield {
@@ -1073,8 +1218,8 @@ export class TextRagService implements TextRagPort {
 
     const context = retrieved
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, 8)  // cap context to 8 chunks — same as generateAnswer
       .map(doc => doc.text)
-      .slice(0, 8)
       .join('\n\n');
 
     let prompt = this.buildPrompt(classification.type, context, query);
@@ -1135,8 +1280,8 @@ export class TextRagService implements TextRagPort {
     }
 
     try {
-      const chunkTexts     = retrieved.map(r => r.text);
-      const verification   = await this.confidencePort.verify(fullAnswer, chunkTexts);
+      const chunkTexts   = retrieved.map(r => r.text);
+      const verification = await this.confidencePort.verify(fullAnswer, chunkTexts);
 
       this.logger.log('Stream_Confidence', {
         score:    verification.confidence.score,
@@ -1145,7 +1290,13 @@ export class TextRagService implements TextRagPort {
         verdict:  verification.llmVerdict,
       });
 
-      if (!verification.grounded && verification.llmVerdict === 'NO') {
+
+
+      if (
+        !verification.grounded &&
+        verification.llmVerdict === 'NO' &&
+        verification.confidence.score < 0.4
+      ) {
         fullAnswer = 'Немає релевантної відповіді';
         yield { event: 'correction', correctedAnswer: fullAnswer, reason: 'hallucination' };
       }

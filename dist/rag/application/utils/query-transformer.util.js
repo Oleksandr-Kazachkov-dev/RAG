@@ -1,8 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.QueryTransformer = void 0;
+exports.translateQueryToUkrainian = translateQueryToUkrainian;
 const transliteration_util_1 = require("./transliteration.util");
-const QUERY_STOP_WORDS = new Set(['хто', 'що', 'який', 'яка', 'де', 'коли', 'чому', 'чи']);
+const QUERY_STOP_WORDS = new Set([
+    'хто', 'що', 'який', 'яка', 'де', 'коли', 'чому', 'чи',
+    'what', 'is', 'are', 'how', 'when', 'where', 'who', 'on', 'the', 'a', 'an', 'in', 'of',
+    'tell', 'me', 'about', 'does', 'do', 'did',
+]);
 const UA_ENDINGS = [
     'ського', 'зького', 'цького',
     'ський', 'зький', 'цький',
@@ -99,12 +104,19 @@ const SYNONYM_MAP = {
     'цикл': ['lifecycle', 'life cycle', 'процес', 'flow', 'workflow', 'життєвий цикл'],
     'lifecycle': ['цикл задачі', 'life cycle', 'процес задачі', 'flow'],
     'workflow': ['процес', 'цикл', 'flow', 'задача'],
-    'назв': ['назва компанії', 'company name', 'история', 'historія', 'history', 'origin'],
-    'компан': ['company', 'organization', 'onix', 'назва'],
-    'history': ['назва компанії', 'компанія', 'historія', 'заснування'],
-    'заснуван': ['founded', 'history', 'назва компанії', 'historія'],
+    'назв': ['назва компанії', 'company name', 'история', 'historія', 'history', 'origin', 'why called', 'meaning'],
+    'компан': ['company', 'organization', 'onix', 'назва', 'brand', 'бренд'],
+    'history': ['назва компанії', 'компанія', 'historія', 'заснування', 'origin', 'founded'],
+    'заснуван': ['founded', 'history', 'назва компанії', 'historія', 'origin', 'create'],
     'розкаж': ['розповісти', 'опис', 'інформація', 'tell me about'],
     'historі': ['history', 'назва компанії', 'заснування', 'origin'],
+    'why': ['origin', 'history', 'reason', 'meaning', 'founded', 'назва компанії', 'заснування'],
+    'origin': ['history', 'founded', 'назва компанії', 'заснування', 'meaning', 'why called'],
+    'meaning': ['origin', 'назва', 'company name', 'history'],
+    'called': ['name', 'назва', 'origin', 'meaning'],
+    'named': ['name', 'назва', 'origin', 'meaning'],
+    'brand': ['назва компанії', 'company name', 'бренд', 'origin'],
+    'бренд': ['brand', 'назва компанії', 'company name', 'origin'],
     'департамент': ['department', 'division'],
     'команда': ['team', 'group'],
     'team': ['команда', 'відділ'],
@@ -132,6 +144,54 @@ const SYNONYM_MAP = {
     'developer': ['розробник', 'програміст'],
     'grow': ['Employee growth process'],
 };
+const EN_TO_UA_QUERY_PATTERNS = [
+    [/why.{0,20}(name|called|named).{0,20}company/i, 'Розкажи історію назви компанії'],
+    [/(name|origin|history).{0,20}company/i, 'Вибір назви компанії'],
+    [/what.{0,20}(mean|means)/i, 'що означає назва компанії'],
+    [/(mean|means).{0,20}(name|company|brand)/i, 'що означає назва компанії'],
+    [/when.{0,30}(founded|created|established)/i, 'коли заснована компанія'],
+    [/(founded|created|established).{0,20}(company|it)/i, 'коли заснована компанія'],
+    [/history.{0,20}company/i, 'історія компанії'],
+    [/company.{0,20}history/i, 'історія компанії'],
+    [/salary.{0,15}review/i, 'коли salary review підвищення зарплати'],
+    [/when.{0,15}salary/i, 'коли перегляд зарплати'],
+    [/pay.{0,15}raise/i, 'підвищення зарплати salary review'],
+    [/how.{0,15}(many|much).{0,15}(vacation|leave|days off)/i, 'скільки днів відпустки'],
+    [/vacation.{0,15}days/i, 'кількість днів відпустки'],
+    [/sick.{0,10}leave/i, 'лікарняний sick leave'],
+    [/how.{0,15}(apply|request|get).{0,15}(vacation|leave)/i, 'як оформити відпустку'],
+    [/work.{0,15}(abroad|remote|another country)/i, 'робота з іншої країни remote'],
+    [/(remote|work from home)/i, 'дистанційна робота remote'],
+    [/onboarding/i, 'онбординг адаптація перший день'],
+    [/offboarding/i, 'звільнення offboarding notice period'],
+    [/what.{0,15}(team|department|division)/i, 'команди відділи департаменти'],
+    [/(team|department).{0,15}(do|does|responsible)/i, 'що робить команда відділ'],
+    [/tell.{0,10}(me|us).{0,10}about/i, 'розкажи про'],
+    [/describe.{0,10}(the|your|our)/i, 'опиши'],
+    [/what.{0,10}is.{0,10}(the|your|our)/i, 'що таке'],
+    [/(coworking|co-working)/i, 'коворкінг оренда місця'],
+    [/fop|individual entrepreneur/i, 'фоп фізична особа підприємець'],
+    [/wifi|wi-fi|wireless/i, 'wifi підключення пароль мережа'],
+    [/(help.?desk|tech.?support|it.?support)/i, 'технічна підтримка help desk'],
+];
+function isEnglishQuery(query) {
+    const letters = query.replace(/[^a-zA-Zа-яіїєґёэъыА-ЯІЇЄҐ]/g, '');
+    if (letters.length === 0)
+        return false;
+    const latin = (query.match(/[a-zA-Z]/g) ?? []).length;
+    return latin / letters.length > 0.5;
+}
+function translateQueryToUkrainian(query) {
+    if (!isEnglishQuery(query))
+        return [];
+    const results = new Set();
+    for (const [pattern, ua] of EN_TO_UA_QUERY_PATTERNS) {
+        if (pattern.test(query)) {
+            results.add(ua);
+        }
+    }
+    return [...results];
+}
 function expandWithSynonyms(query) {
     const lowerQuery = query.toLowerCase().replace(/[?!.,;:]/g, '');
     const keywords = new Set();
@@ -228,14 +288,14 @@ class QueryTransformer {
         if (tokenCount <= 4)
             return [];
         const prompt = `Rephrase this question in 2 different ways while keeping the same meaning: "${query}"\n\n` +
-            `Provide only the rephrased questions, one per line, no numbers.`;
+            `Provide only the rephrased questions, one per line, no numbers.` +
+            `Translate text to ukrainian`;
         try {
             const response = await this.ollamaService.getRagResponseByPrompt(prompt);
             return response
                 .split('\n')
                 .map(l => l.trim())
-                .filter(l => l.length > 0 && l !== query)
-                .slice(0, 2);
+                .filter(l => l.length > 0 && l !== query);
         }
         catch {
             return [];

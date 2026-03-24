@@ -22,5 +22,6 @@ export declare class HybridSearchEngine {
         searchMode?: SearchMode | 'entity';
         scoreThreshold?: number;
         minTextLength?: number;
+        originalQuery?: string;
     }): Promise<HybridSearchResult[] | null>;
 }

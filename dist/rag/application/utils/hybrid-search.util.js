@@ -77,17 +77,55 @@ class HybridSearchEngine {
         const useKeywordScroll = (mode === 'entity' || mode === 'balanced' || mode === 'wide') && keywords.length > 0;
         let keywordScrollPoints = [];
         if (useKeywordScroll) {
-            const shouldClauses = keywords.slice(0, 15).map(kw => ({
+            const contextKwClauses = keywords.slice(0, 15).map(kw => ({
                 key: 'contextKeywords',
                 match: { value: kw.toLowerCase() },
             }));
+            const queryWords = options.originalQuery
+                ? [...new Set(options.originalQuery
+                        .toLowerCase()
+                        .replace(/[?!.,;:'"]/g, '')
+                        .split(/\s+/)
+                        .filter(w => w.length > 2))]
+                : [];
+            const UA_TO_EN_SCROLL = {
+                'назва компанії': ['company', 'name', 'brand', 'called', 'named'],
+                'назва та історія компанії': ['company', 'history', 'name', 'founded', 'established'],
+                'заснування': ['founded', 'established', 'created'],
+                'чому компанія так називається': ['company', 'name', 'called', 'named', 'why'],
+                'що означає назва компанії': ['name', 'means', 'meaning', 'company'],
+                'коли заснована компанія': ['founded', 'established', 'created'],
+                'історія компанії': ['history', 'company', 'established', 'founded'],
+                'розкажи про': ['about', 'company', 'overview'],
+                'онбординг адаптація перший день': ['onboarding', 'first', 'day', 'adaptation'],
+                'дистанційна робота remote': ['remote', 'work', 'abroad', 'country'],
+                'коворкінг оренда місця': ['coworking', 'office', 'space'],
+                'технічна підтримка help desk': ['support', 'help', 'desk', 'technical'],
+                'лікарняний sick leave': ['sick', 'leave', 'medical'],
+                'кількість днів відпустки': ['vacation', 'days', 'leave', 'annual'],
+            };
+            const expandedForScroll = new Set([
+                ...queryWords,
+                ...keywords.flatMap(kw => {
+                    const kl = kw.toLowerCase();
+                    const words = kl.split(/\s+/).filter(w => w.length > 2);
+                    const enEquiv = UA_TO_EN_SCROLL[kl] ?? [];
+                    return [...words, ...enEquiv];
+                }),
+            ]);
+            const textSearchWords = [...expandedForScroll].filter(w => w.length > 2).slice(0, 20);
+            const textClauses = textSearchWords.map(word => ({
+                key: 'text',
+                match: { text: word },
+            }));
+            const allClauses = [...contextKwClauses, ...textClauses];
             try {
                 const scrollResult = await this.qdrantService.scroll(collectionName, {
                     limit: 200,
                     with_payload: true,
                     filter: {
                         must: [{ key: 'textLength', range: { gte: 20 } }],
-                        should: shouldClauses,
+                        should: allClauses,
                     },
                 });
                 keywordScrollPoints = (scrollResult.points ?? []).map(p => ({
@@ -133,6 +171,25 @@ class HybridSearchEngine {
         });
         const working = meaningful.length > 0 ? meaningful : unified;
         if (keywords.length > 0) {
+            const UA_TO_EN_KEYWORD_MAP = {
+                'назва компанії': ['company name', 'company', 'name', 'brand', 'called'],
+                'назва та історія компанії': ['company', 'history', 'name', 'founded', 'established'],
+                'заснування': ['founded', 'established', 'created', 'history'],
+                'чому компанія так називається': ['company', 'name', 'called', 'why', 'named'],
+                'що означає назва компанії': ['name', 'meaning', 'means', 'company'],
+                'коли заснована компанія': ['founded', 'established', 'created', '2000'],
+                'історія компанії': ['history', 'company', 'established', 'founded'],
+                'розкажи про': ['about', 'company', 'overview'],
+            };
+            const expandedKeywords = new Set(keywords.map(k => k.toLowerCase()));
+            for (const kw of keywords) {
+                const kl = kw.toLowerCase();
+                kl.split(/\s+/).filter(w => w.length > 2).forEach(w => expandedKeywords.add(w));
+                const enVariants = UA_TO_EN_KEYWORD_MAP[kl];
+                if (enVariants)
+                    enVariants.forEach(v => expandedKeywords.add(v));
+            }
+            const allKeywords = [...expandedKeywords];
             const contextKwMap = new Map();
             for (const r of vectorResults) {
                 const ck = r.payload?.contextKeywords ?? [];
@@ -146,14 +203,14 @@ class HybridSearchEngine {
             for (const doc of working) {
                 const textLower = doc.text.toLowerCase();
                 const contextKws = contextKwMap.get(doc.id) ?? [];
-                const matchedKws = keywords.filter(kw => {
+                const matchedKws = allKeywords.filter(kw => {
                     const kl = kw.toLowerCase();
                     return textLower.includes(kl) || contextKws.some(ck => ck.includes(kl));
                 });
                 if (matchedKws.length >= minKeywordMatch) {
                     doc.keywordScore =
                         bm25Score(textLower, matchedKws, avgDocLen) +
-                            matchedKws.length * 0.5;
+                            Math.min(matchedKws.length, allKeywords.length) * 0.5;
                     const urlsInText = (doc.text.match(/https?:\/\/\S+|\b[\w-]+\.[\w.-]+\.\w{2,}\b/g) ?? [])
                         .map(u => u.toLowerCase());
                     const urlKeywordMatch = matchedKws.some(kw => urlsInText.some(url => url.includes(kw.toLowerCase())));
