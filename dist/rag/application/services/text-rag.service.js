@@ -870,9 +870,11 @@ let TextRagService = class TextRagService {
             ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
             : rawRetrieved;
         const postFilterResults = preFiltered.length > 0 ? preFiltered : rawRetrieved.slice(0, 3);
+        console.log('postFilterResults.length :>> ', postFilterResults.length);
         const retrieved = p.useParentExpansion
             ? await this.expandToParentContext(postFilterResults)
             : postFilterResults;
+        console.log('retrieved.length :>> ', retrieved.length);
         if (retrieved.length === 0) {
             yield {
                 event: 'metadata',
@@ -892,6 +894,7 @@ let TextRagService = class TextRagService {
             .map(doc => doc.text)
             .join('\n\n');
         let prompt = this.buildPrompt(classification.type, context, query);
+        console.log('prompt.length :>> ', prompt.length);
         if (kgContext) {
             prompt +=
                 `\n\n<knowledge_graph>\n${kgContext}\n</knowledge_graph>\n` +
@@ -939,6 +942,7 @@ let TextRagService = class TextRagService {
             }
         }
         catch (err) {
+            console.log('err :>> ', err);
             yield { event: 'error', error: err?.message ?? 'LLM streaming failed' };
             return;
         }

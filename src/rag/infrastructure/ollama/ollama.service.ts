@@ -217,7 +217,6 @@ export class OllamaService {
       },
     };
   
-    // Видаляємо undefined поля
     Object.keys(requestBody.options).forEach(key => {
       if (requestBody.options[key] === undefined) {
         delete requestBody.options[key];
@@ -231,13 +230,10 @@ export class OllamaService {
       headers['Authorization'] = `Bearer ${this.apiKey}`;
     }
   
-    // Використовуємо нативний fetch замість axios —
-    // axios буферизує chunks, fetch читає байт за байтом
     const response = await fetch(`${this.baseURL}/api/chat`, {
       method:  'POST',
       headers,
       body:    JSON.stringify(requestBody),
-      // @ts-ignore — Node 18+ підтримує
       signal:  AbortSignal.timeout(this.timeout),
     });
   
@@ -267,7 +263,6 @@ export class OllamaService {
           }
           if (parsed.done) return;
         } catch {
-          // неповний JSON — пропускаємо
         }
       }
     }

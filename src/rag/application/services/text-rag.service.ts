@@ -1232,8 +1232,6 @@ export class TextRagService implements TextRagPort {
 
     let prompt = this.buildPrompt(classification.type, context, query);
 
-    console.log('context :>> ', context);
-
     console.log('prompt.length :>> ', prompt.length);
 
     if (kgContext) {
@@ -1287,6 +1285,7 @@ export class TextRagService implements TextRagPort {
         yield { event: 'token', token };
       }
     } catch (err: any) {
+      console.log('err :>> ', err);
       yield { event: 'error', error: err?.message ?? 'LLM streaming failed' };
       return;
     }
