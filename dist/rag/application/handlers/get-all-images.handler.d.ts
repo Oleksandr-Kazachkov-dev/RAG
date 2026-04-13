@@ -1,6 +1,6 @@
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
+import { LoggerPort } from "../../shared/application/ports/logger.port";
 import { IImageWithoutScore } from '../common/interfaces/image.interfaces';
-import { ImageRagPort } from 'src/rag/domain/ports/image-rag.port';
+import { ImageRagPort } from "../../domain/ports/image-rag.port";
 import { GetAllImagesCommand } from '../commands/get-all-images.command';
 export declare class GetAllImagesHandler {
     private readonly imageRag;

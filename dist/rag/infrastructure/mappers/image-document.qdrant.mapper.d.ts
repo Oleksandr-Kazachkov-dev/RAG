@@ -1,5 +1,5 @@
 import { Schemas } from '@qdrant/js-client-rest';
-import { ImageDocument } from 'src/rag/domain/entities/image-document.entity';
+import { ImageDocument } from "../../domain/entities/image-document.entity";
 export declare class ImageDocumentQdrantMapper {
     static toPoint(doc: ImageDocument): {
         id: string;

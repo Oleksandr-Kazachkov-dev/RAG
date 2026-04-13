@@ -1,9 +1,9 @@
-import { LoggerPort } from "src/rag/shared/application/ports/logger.port";
+import { LoggerPort } from "../../shared/application/ports/logger.port";
 import { IImageWithoutScore, IImageWithScore } from "../common/interfaces/image.interfaces";
 import { IDocumentWithoutEmbedding, IDocumentWithEmbedding } from "../common/interfaces/rag-documents.interfaces";
 import { GetAllDocumentsQuery, GetAllImagesQuery, GetImagesByKeywordQuery, RetrieveDocumentsQuery } from "./rag.queries";
-import { ImageRagPort } from "src/rag/domain/ports/image-rag.port";
-import { TextRagPort } from "src/rag/domain/ports/textRagPort";
+import { ImageRagPort } from "../../domain/ports/image-rag.port";
+import { TextRagPort } from "../../domain/ports/textRagPort";
 export declare class GetAllDocumentsHandler {
     private readonly textRag;
     constructor(textRag: TextRagPort);

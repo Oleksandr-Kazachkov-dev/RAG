@@ -129,6 +129,16 @@ services:
       retries: 5
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    container_name: rag_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+
 volumes:
   qdrant_data:
   minio_data:
@@ -136,3 +146,4 @@ volumes:
   postgres_data:
   neo4j_data:
   neo4j_logs:
+  redis_data:

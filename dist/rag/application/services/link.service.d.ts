@@ -1,5 +1,6 @@
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
-import { IKnowledgeLink, IKnowledgeLinkRepository } from 'src/rag/domain/interfaces/knowledge-link.interface';
+import { Redis } from "@upstash/redis";
+import { LoggerPort } from "../../shared/application/ports/logger.port";
+import { IKnowledgeLink, IKnowledgeLinkRepository } from "../../domain/interfaces/knowledge-link.interface";
 export interface LinkSearchResult {
     found: boolean;
     links: IKnowledgeLink[];
@@ -8,7 +9,8 @@ export interface LinkSearchResult {
 export declare class LinkService {
     private readonly repo;
     private readonly logger;
-    constructor(repo: IKnowledgeLinkRepository, logger: LoggerPort);
+    private readonly redis;
+    constructor(repo: IKnowledgeLinkRepository, logger: LoggerPort, redis: Redis);
     indexLinksFromFiles(files: Array<{
         originalname: string;
         buffer: Buffer;
@@ -25,4 +27,7 @@ export declare class LinkService {
     private linkScore;
     private rankLinks;
     private formatLinksBlock;
+    private redisGet;
+    private redisSet;
+    private bustLinkCache;
 }

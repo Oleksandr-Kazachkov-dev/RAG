@@ -1,4 +1,4 @@
-import { IUploadedFile } from "src/rag/domain/interfaces/upload-folder.interface";
+import { IUploadedFile } from "../../domain/interfaces/upload-folder.interface";
 export interface UploadKnowledgeOptions {
     chunkingStrategy?: 'simple' | 'semantic' | 'parent-child';
     enableKnowledgeGraph?: boolean;

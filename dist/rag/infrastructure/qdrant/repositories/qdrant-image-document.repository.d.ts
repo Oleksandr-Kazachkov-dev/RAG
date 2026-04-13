@@ -4,7 +4,7 @@ import { IImageDocumentRepository } from '../../../domain/repositories/image-doc
 import { ImageDocument } from '../../../domain/entities/image-document.entity';
 import { Embedding } from '../../../domain/value-objects/embedding.vo';
 import { RagQdrantService } from '../rag-qdrant.service';
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
+import { LoggerPort } from "../../../shared/application/ports/logger.port";
 export declare class QdrantImageDocumentRepository implements IImageDocumentRepository, OnModuleInit {
     private readonly qdrant;
     private readonly configService;

@@ -1,6 +1,6 @@
-import { IConfidencePort } from "src/rag/domain/ports/confidence.port";
-import { TextRagPort } from "src/rag/domain/ports/textRagPort";
-import { LoggerPort } from "src/rag/shared/application/ports/logger.port";
+import { IConfidencePort } from "../../domain/ports/confidence.port";
+import { TextRagPort } from "../../domain/ports/textRagPort";
+import { LoggerPort } from "../../shared/application/ports/logger.port";
 import { AskQuestionCommand } from "../commands/ask-question.command";
 import { IGenerateAnswer, IStreamChunk } from "../common/interfaces/rag-documents.interfaces";
 export declare class AskQuestionHandler {

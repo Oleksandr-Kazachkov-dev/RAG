@@ -1,5 +1,5 @@
-import { Embedding } from 'src/rag/domain/value-objects/embedding.vo';
-import { SimilarityScore } from 'src/rag/domain/value-objects/similarity-score.vo';
+import { Embedding } from "../../../domain/value-objects/embedding.vo";
+import { SimilarityScore } from "../../../domain/value-objects/similarity-score.vo";
 export interface IUploadImage {
     imagesUploaded: number;
 }

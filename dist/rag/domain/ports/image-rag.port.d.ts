@@ -1,4 +1,4 @@
-import { IDeleteImage, IImageWithScore, IImageWithoutScore, IUploadImage } from "src/rag/application/common/interfaces/image.interfaces";
+import { IDeleteImage, IImageWithScore, IImageWithoutScore, IUploadImage } from "../../application/common/interfaces/image.interfaces";
 import { IUploadedFile } from "../interfaces/upload-folder.interface";
 export interface ImageRagPort {
     deleteImageById(id: string): Promise<IDeleteImage>;

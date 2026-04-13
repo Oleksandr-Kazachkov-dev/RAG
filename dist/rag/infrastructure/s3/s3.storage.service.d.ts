@@ -1,6 +1,6 @@
 import { OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
+import { LoggerPort } from "../../shared/application/ports/logger.port";
 export declare class S3StorageService implements OnModuleInit {
     private readonly configService;
     private readonly logger;

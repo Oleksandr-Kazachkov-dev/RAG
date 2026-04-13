@@ -194,9 +194,8 @@ function translateQueryToUkrainian(query) {
         return [];
     const results = new Set();
     for (const [pattern, ua] of EN_TO_UA_QUERY_PATTERNS) {
-        if (pattern.test(query)) {
+        if (pattern.test(query))
             results.add(ua);
-        }
     }
     return [...results];
 }
@@ -237,18 +236,36 @@ function expandWithSynonyms(query) {
     }
     return [...keywords].filter(k => k.length > 2);
 }
+const TRANSFORM_TTL_SECONDS = 60 * 60 * 2;
 class QueryTransformer {
-    constructor(ollamaService) {
+    constructor(ollamaService, redis) {
         this.ollamaService = ollamaService;
+        this.redis = redis;
     }
     async transformQuery(query) {
+        const cacheKey = `transform:${query.trim().toLowerCase().slice(0, 120)}`;
+        if (this.redis) {
+            try {
+                const cached = await this.redis.get(cacheKey);
+                if (cached)
+                    return cached;
+            }
+            catch { }
+        }
         const entity = (0, transliteration_util_1.isEntityQuery)(query);
         const [expanded, rephrased, keywords] = await Promise.all([
             this.expandQuery(query, entity),
             this.rephraseQuery(query, entity),
             this.extractKeywords(query, entity),
         ]);
-        return { original: query, expanded, rephrased, keywords, isEntityQuery: entity };
+        const result = { original: query, expanded, rephrased, keywords, isEntityQuery: entity };
+        if (this.redis) {
+            try {
+                await this.redis.set(cacheKey, result, { ex: TRANSFORM_TTL_SECONDS });
+            }
+            catch { }
+        }
+        return result;
     }
     async expandQuery(query, isEntity) {
         if (isEntity) {

@@ -1,7 +1,7 @@
-import { AskQuestionOptions } from 'src/rag/application/commands/ask-question.command';
-import { IDeleteDocument, IDocumentWithEmbedding, IDocumentWithoutEmbedding, IGenerateAnswer, IStreamChunk, IUploadKnowledge } from 'src/rag/application/common/interfaces/rag-documents.interfaces';
+import { AskQuestionOptions } from "../../application/commands/ask-question.command";
+import { IDeleteDocument, IDocumentWithEmbedding, IDocumentWithoutEmbedding, IGenerateAnswer, IStreamChunk, IUploadKnowledge } from "../../application/common/interfaces/rag-documents.interfaces";
 import { IUploadedFile } from '../interfaces/upload-folder.interface';
-import { UploadFolderOptions } from 'src/rag/application/commands/upload-folder.command';
+import { UploadFolderOptions } from "../../application/commands/upload-folder.command";
 export interface TextRagPort {
     uploadKnowledgeFromFile(file: Express.Multer.File, options?: {
         chunkingStrategy?: 'simple' | 'semantic' | 'parent-child';

@@ -1,5 +1,5 @@
-import { TextRagPort } from 'src/rag/domain/ports/textRagPort';
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
+import { TextRagPort } from "../../domain/ports/textRagPort";
+import { LoggerPort } from "../../shared/application/ports/logger.port";
 import { GetAllDocumentsCommand } from '../commands/get-all-documents.command';
 import { IDocumentWithoutEmbedding } from '../common/interfaces/rag-documents.interfaces';
 export declare class GetAllDocumentsHandler {

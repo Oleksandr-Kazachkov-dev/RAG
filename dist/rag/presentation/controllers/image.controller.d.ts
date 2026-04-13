@@ -1,6 +1,6 @@
 import { CommandBusPort } from '../../shared/application/ports/command-bus.port';
 import { ApiResponse } from '../api-response/api-response';
-import { IUploadImage, IImageWithScore, IImageWithoutScore, IDeleteImage } from 'src/rag/application/common/interfaces/image.interfaces';
+import { IUploadImage, IImageWithScore, IImageWithoutScore, IDeleteImage } from "../../application/common/interfaces/image.interfaces";
 export declare class RagImagesController {
     private readonly commandBus;
     constructor(commandBus: CommandBusPort);

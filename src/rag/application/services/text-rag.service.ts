@@ -1,5 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Redis } from "@upstash/redis"
 import { v4 as uuidv4 } from 'uuid';
 import { OllamaService } from 'src/rag/infrastructure/ollama/ollama.service';
 import { RagQdrantService } from 'src/rag/infrastructure/qdrant/rag-qdrant.service';
@@ -44,18 +45,20 @@ import {
   cyrillicToLatin,
 } from '../utils/transliteration.util';
 import { SearchMode } from '../../infrastructure/qdrant/rag-qdrant.service';
-import { QueryClassifier, FineTuningParams } from '../utils/query-classefire.util';
+import { QueryClassifier, FineTuningParams, QueryClassification } from '../utils/query-classefire.util';
 import { IConfidencePort } from '../../domain/ports/confidence.port';
 import { LinkService } from './link.service';
 
 const MIN_CHUNK_TEXT_LENGTH = 80;
-const UPLOAD_CONCURRENCY = 3;
-const MAX_CONTEXT_CHARS = 6000;
+const UPLOAD_CONCURRENCY    = 3;
+const EMBED_BATCH_SIZE      = 10;
+const MAX_CONTEXT_CHARS     = 6000;
+
+const RRF_K = 60;
 
 const KEYWORD_STOP_WORDS = new Set([
   'what', 'is', 'are', 'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
   'of', 'with', 'by', 'from', 'and', 'or', 'but', 'how', 'when',
-  // NOTE: 'why' removed — it helps route origin/reason queries correctly
   'where', 'who', 'which', 'does', 'do', 'did', 'has', 'have', 'had',
   'can', 'could', 'would', 'should', 'will', 'be', 'been', 'being',
   'this', 'that', 'these', 'those', 'it', 'its', 'tell', 'me', 'about',
@@ -64,6 +67,9 @@ const KEYWORD_STOP_WORDS = new Set([
 ]);
 
 const FACTUAL_SCORE_THRESHOLD_CAP = 0.65;
+
+// Max classification cache entries before LRU eviction
+const CLASSIFICATION_CACHE_MAX = 500;
 
 interface TrackCitation {
   id: string;
@@ -87,6 +93,38 @@ interface RetrieveInternalOptions extends Pick<
   _searchMode?: SearchMode | 'entity';
 }
 
+// Returned by prepareGenerationContext on success
+interface PreparedContext {
+  classification: QueryClassification;
+  p: FineTuningParams;
+  retrieved: IDocumentWithEmbedding[];
+  prompt: string;
+  generationParams: GenerationParams;
+}
+
+interface GenerationParams {
+  temperature: number;
+  topP: number | undefined;
+  topK: number | undefined;
+  maxTokens: number;
+  repeatPenalty: number | undefined;
+  seed: number | undefined;
+}
+
+function reciprocalRankFusion(
+  allResults: Array<Array<{ id: string; score: number }>>,
+  k = RRF_K,
+): Map<string, number> {
+  const rrfScores = new Map<string, number>();
+  for (const results of allResults) {
+    const sorted = [...results].sort((a, b) => b.score - a.score);
+    sorted.forEach((r, rank) => {
+      rrfScores.set(r.id, (rrfScores.get(r.id) ?? 0) + 1 / (k + rank + 1));
+    });
+  }
+  return rrfScores;
+}
+
 @Injectable()
 export class TextRagService implements TextRagPort {
   private queryTransformer: QueryTransformer;
@@ -94,6 +132,9 @@ export class TextRagService implements TextRagPort {
   private hybridSearch: HybridSearchEngine;
   private contextualCompressor: ContextualCompressor;
   private queryClassifier: QueryClassifier;
+
+  // ── Classification cache (LRU-lite: evict oldest when full) ──────────────
+  private readonly classificationCache = new Map<string, QueryClassification>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -110,13 +151,17 @@ export class TextRagService implements TextRagPort {
     @Inject('IConfidencePort')
     private readonly confidencePort: IConfidencePort,
     private readonly linkService: LinkService,
+    @Inject('REDIS_CLIENT')
+    private readonly redis: Redis,
   ) {
-    this.queryTransformer     = new QueryTransformer(this.ollama);
+    this.queryTransformer     = new QueryTransformer(this.ollama, this.redis);
     this.reranker             = new Reranker(this.ollama);
     this.hybridSearch         = new HybridSearchEngine(this.qdrantService, this.configService);
     this.contextualCompressor = new ContextualCompressor(this.ollama);
     this.queryClassifier      = new QueryClassifier(this.ollama);
   }
+
+  // ── Upload ────────────────────────────────────────────────────────────────
 
   async uploadKnowledgeFromFile(
     file: Express.Multer.File,
@@ -158,6 +203,7 @@ export class TextRagService implements TextRagPort {
   ): Promise<{ totalChunks: number; filesProcessed: number }> {
     let totalChunks    = 0;
     let filesProcessed = 0;
+    let filesFailed    = 0;
 
     for (let i = 0; i < files.length; i += UPLOAD_CONCURRENCY) {
       const batch   = files.slice(i, i + UPLOAD_CONCURRENCY);
@@ -171,11 +217,20 @@ export class TextRagService implements TextRagPort {
         if (res.status === 'fulfilled') {
           this.logger.log('File processed', { name: file.originalname, chunks: res.value.chunks });
           totalChunks += res.value.chunks;
+          filesProcessed++;
         } else {
           this.logger.error(`Failed to process ${file.originalname}`, res.reason);
+          filesFailed++;
         }
-        filesProcessed++;
       }
+    }
+
+    if (filesFailed > 0) {
+      this.logger.warn('uploadMarkdownFolder: some files failed', {
+        filesProcessed,
+        filesFailed,
+        total: files.length,
+      });
     }
 
     return { totalChunks, filesProcessed };
@@ -206,8 +261,10 @@ export class TextRagService implements TextRagPort {
     embedModel: string,
     options?: UploadFolderOptions,
   ): Promise<number> {
-    const pcOpts = options?.parentChild ?? {};
-    const fileId = this.buildFileId(file.originalname);
+    const ragConfig  = this.configService.get<TRagConfig>(RAG_CONFIG);
+    const vectorSize = ragConfig?.textRagVectorSize ?? 768;
+    const pcOpts     = options?.parentChild ?? {};
+    const fileId     = this.buildFileId(file.originalname);
 
     const rawText  = file.buffer.toString('utf-8');
     const keywords = await this.prepareKeywordsForFile(text, file.originalname, rawText);
@@ -216,60 +273,17 @@ export class TextRagService implements TextRagPort {
       sample: keywords.slice(0, 12),
     });
 
-    let savedCount = 0;
+    const collectedParents: Array<{ text: string; metadata: ChunkMetadata }> = [];
+    const collectedChildren: Array<{ text: string; metadata: ChunkMetadata }> = [];
 
     await parentChildChunking(
       text,
       async (chunk: { text: string; metadata: ChunkMetadata }) => {
-        // Level 0 = parent block. Store it in Qdrant WITHOUT a real embedding
-        // (zero vector) so expandToParentContext can fetch its text via getPoints,
-        // but it will never surface in similarity search (score ≈ 0).
         if (chunk.metadata.level === 0) {
-          const zeroEmbedding = new Array(768).fill(0); // nomic-embed-text dim
-          const parentDoc = TextDocument.create(
-            // Use chunkId as the id so getPoints(parentId) works directly
-            chunk.metadata.chunkId,
-            chunk.text,
-            zeroEmbedding,
-            embedModel,
-            new Date(),
-            chunk.metadata.chunkId,
-            0,
-            chunk.metadata.startIndex,
-            chunk.metadata.endIndex,
-            chunk.metadata.childIds,
-            undefined,
-            undefined,
-            keywords,
-          );
-          await this.textRepository.saveMany([parentDoc]);
-          return;
+          collectedParents.push(chunk);
+        } else {
+          collectedChildren.push(chunk);
         }
-
-        const hasUrl = /https?:\/\/\S+|\b[\w-]+\.[\w-]+\.\w{2,}\b/.test(chunk.text);
-        if (chunk.text.trim().length < MIN_CHUNK_TEXT_LENGTH && !hasUrl) {
-          this.logger.log(
-            `Skipping micro-chunk (${chunk.text.trim().length} chars): "${chunk.text.trim().slice(0, 60)}"`,
-          );
-          return;
-        }
-
-        const embedding = await this.ollama.embed(chunk.text);
-
-        const doc = TextDocument.create(
-          uuidv4(), chunk.text, extractEmbedding(embedding), embedModel, new Date(),
-          chunk.metadata.chunkId,
-          chunk.metadata.level,
-          chunk.metadata.startIndex,
-          chunk.metadata.endIndex,
-          chunk.metadata.childIds,
-          chunk.metadata.parentId,
-          chunk.metadata.parentText,
-          keywords,
-        );
-
-        await this.textRepository.saveMany([doc]);
-        savedCount++;
       },
       {
         parentSize:         pcOpts.parentSize         ?? 4000,
@@ -280,6 +294,67 @@ export class TextRagService implements TextRagPort {
         fileId,
       },
     );
+
+    if (collectedParents.length > 0) {
+      const parentDocs = collectedParents.map(chunk =>
+        TextDocument.create(
+          chunk.metadata.chunkId,
+          chunk.text,
+          new Array(vectorSize).fill(0),
+          embedModel,
+          new Date(),
+          chunk.metadata.chunkId,
+          0,
+          chunk.metadata.startIndex,
+          chunk.metadata.endIndex,
+          chunk.metadata.childIds,
+          undefined,
+          undefined,
+          keywords,
+        ),
+      );
+      await this.textRepository.saveMany(parentDocs);
+      this.logger.log(`Saved ${parentDocs.length} parent blocks`);
+    }
+
+    const validChildren = collectedChildren.filter(chunk => {
+      const hasUrl = /https?:\/\/\S+|\b[\w-]+\.[\w-]+\.\w{2,}\b/.test(chunk.text);
+      if (chunk.text.trim().length < MIN_CHUNK_TEXT_LENGTH && !hasUrl) {
+        this.logger.log(
+          `Skipping micro-chunk (${chunk.text.trim().length} chars): "${chunk.text.trim().slice(0, 60)}"`,
+        );
+        return false;
+      }
+      return true;
+    });
+
+    let savedCount = 0;
+
+    for (let i = 0; i < validChildren.length; i += EMBED_BATCH_SIZE) {
+      const batch      = validChildren.slice(i, i + EMBED_BATCH_SIZE);
+      const embeddings = await Promise.all(batch.map(c => this.ollama.embed(c.text)));
+
+      const docs = batch.map((chunk, idx) =>
+        TextDocument.create(
+          uuidv4(),
+          chunk.text,
+          extractEmbedding(embeddings[idx]),
+          embedModel,
+          new Date(),
+          chunk.metadata.chunkId,
+          chunk.metadata.level,
+          chunk.metadata.startIndex,
+          chunk.metadata.endIndex,
+          chunk.metadata.childIds,
+          chunk.metadata.parentId,
+          chunk.metadata.parentText,
+          keywords,
+        ),
+      );
+
+      await this.textRepository.saveMany(docs);
+      savedCount += docs.length;
+    }
 
     this.logger.log(`Saved ${savedCount} child chunks (parent-child strategy)`);
     return savedCount;
@@ -345,7 +420,7 @@ export class TextRagService implements TextRagPort {
       'що', 'як', 'де', 'коли', 'хто', 'чому', 'який', 'яка', 'яке', 'які',
       'чи', 'або', 'та', 'це', 'є', 'у', 'в', 'на', 'до', 'по', 'про', 'за',
       'розкажи', 'підкажи', 'поясни', 'опиши', 'покажи', 'дай', 'знайди',
-      'такий', 'така', 'таке', 'такі', 'розкажи', 'про',
+      'такий', 'така', 'таке', 'такі', 'про',
     ]);
 
     return query
@@ -363,7 +438,7 @@ export class TextRagService implements TextRagPort {
     while ((m = HEADER_RE.exec(rawText)) !== null) {
       const line = m[1].replace(/[*_`~]/g, '');
       line
-        .split(/[\s\-–—/|,;:()\[\]{}]+/)
+        .split(/[\s\-–—/|,;:()[\]{}]+/)
         .flatMap(w => w.split(/(?=[A-Z])/))
         .map(w => w.trim().toLowerCase())
         .filter(w => w.length > 1)
@@ -401,7 +476,7 @@ export class TextRagService implements TextRagPort {
   private splitDomainParts(raw: string, out: Set<string>): void {
     const TLD = new Set(['com', 'ua', 'net', 'org', 'io', 'co', 'www', 'http', 'https']);
     raw
-      .split(/[./\-_?&#=+:→\[\]()\\ |,\s]/)
+      .split(/[./\-_?&#=+:→[\]()\\ |,\s]/)
       .map(s => s.toLowerCase().trim())
       .filter(s =>
         s.length > 1 &&
@@ -495,6 +570,34 @@ export class TextRagService implements TextRagPort {
       .substring(0, 50);
   }
 
+  private async classifyQuery(query: string): Promise<QueryClassification> {
+    const key = `classification:${query.trim().toLowerCase().slice(0, 120)}`;
+
+    try {
+      const cached = await this.redis.get<QueryClassification>(key);
+
+      if (cached) {
+        return cached;
+      }
+    } catch (err: any) {
+      this.logger.warn('classifyQuery: Redis get failed', { error: err?.message });
+    }
+
+    const result = await this.queryClassifier.classify(query);
+
+    try {
+      await this.redis.set(
+        key,
+        JSON.stringify(result),
+        { ex: 60 * 60 }
+      );
+    } catch (err: any) {
+      this.logger.warn('classifyQuery: Redis set failed', { error: err?.message });
+    }
+
+    return result;
+  }
+
   async retrieve(
     query: string,
     limit?: number,
@@ -524,6 +627,9 @@ export class TextRagService implements TextRagPort {
     let keywords: string[]       = [];
     let queriesToEmbed: string[] = [query];
 
+    let uaStartIndex = -1;
+    let uaTranslations: string[] = [];
+
     if (useQueryTransformation) {
       try {
         const transformed = await this.queryTransformer.transformQuery(query);
@@ -541,12 +647,18 @@ export class TextRagService implements TextRagPort {
               ...transformed.rephrased.slice(0, 1),
             ].filter(Boolean).slice(0, 4);
 
-        const uaTranslations = translateQueryToUkrainian(query);
+        uaTranslations = translateQueryToUkrainian(query);
+
         if (uaTranslations.length > 0) {
           this.logger.log('EN→UA query translation', { query, uaTranslations });
-          queriesToEmbed = [...new Set([...queriesToEmbed, ...uaTranslations])].slice(0, 6);
-        }
 
+          const beforeLen = queriesToEmbed.length;
+          queriesToEmbed = [...new Set([...queriesToEmbed, ...uaTranslations])].slice(0, 6);
+
+          if (queriesToEmbed.length > beforeLen) {
+            uaStartIndex = beforeLen;
+          }
+        }
       } catch {
         keywords = [];
       }
@@ -562,7 +674,7 @@ export class TextRagService implements TextRagPort {
       }
     }
 
-    const embeddings = await Promise.all(queriesToEmbed.map(q => this.ollama.embed(q)));
+    const embeddings       = await Promise.all(queriesToEmbed.map(q => this.ollama.embed(q)));
     const primaryEmbedding = new Embedding(extractEmbedding(embeddings[0]));
 
     let results: Array<{ id: string; text: string; score: number }> = [];
@@ -607,27 +719,28 @@ export class TextRagService implements TextRagPort {
         );
       }
 
-
       const validResults = allSearchResults.filter(Boolean) as NonNullable<typeof allSearchResults[0]>[];
 
       if (validResults.length === 0) return 'There is no relevant information in knowledge';
 
-      const mergedMap = new Map<string, HybridSearchResult>();
+      const resultById = new Map<string, HybridSearchResult>();
+      const perQueryForRrf: Array<Array<{ id: string; score: number }>> = [];
+
       for (const searchResults of validResults) {
-        for (const r of searchResults) {
-          const existing = mergedMap.get(r.id);
-          if (!existing || r.hybridScore > existing.hybridScore) {
-            mergedMap.set(r.id, r);
-          }
-        }
+        if (searchResults.length === 0) continue;
+        perQueryForRrf.push(
+          searchResults.map(r => {
+            if (!resultById.has(r.id)) resultById.set(r.id, r);
+            return { id: r.id, score: r.hybridScore };
+          }),
+        );
       }
 
-      const uaTranslations = translateQueryToUkrainian(query);
-      if (uaTranslations.length > 0 && collectionName) {
+      const rrfScores = reciprocalRankFusion(perQueryForRrf);
+
+      if (uaStartIndex >= 0 && uaTranslations.length > 0 && collectionName) {
         try {
-          const uaEmbeddings = await Promise.all(
-            uaTranslations.map(ua => this.ollama.embed(ua)),
-          );
+          const uaEmbeddings   = embeddings.slice(uaStartIndex);
           const uaSearchResults = await Promise.all(
             uaEmbeddings.map(emb =>
               this.qdrantService.search(collectionName, {
@@ -644,31 +757,38 @@ export class TextRagService implements TextRagPort {
               const id   = p.id.toString();
               const text = (p.payload?.text as string) ?? '';
               if (text.trim().length < MIN_CHUNK_TEXT_LENGTH) continue;
-              const uaScore = p.score ?? 0;
-              const existing = mergedMap.get(id);
-              if (!existing || uaScore > existing.hybridScore) {
-                mergedMap.set(id, {
+
+              if (!resultById.has(id)) {
+                resultById.set(id, {
                   id,
                   text,
                   parentText:   p.payload?.parentText as string | undefined,
                   parentId:     p.payload?.parentId  as string | undefined,
-                  vectorScore:  uaScore,
+                  vectorScore:  p.score ?? 0,
                   keywordScore: 0,
-                  hybridScore:  uaScore,
+                  hybridScore:  p.score ?? 0,
                 });
                 uaAdded++;
               }
+
+              const existingRrf = rrfScores.get(id) ?? 0;
+              rrfScores.set(id, existingRrf + (p.score ?? 0) * 0.9 / (RRF_K + 1));
             }
           }
-          this.logger.log('UA vector search merged', { uaAdded, total: mergedMap.size });
+          this.logger.log('UA vector search merged', { uaAdded, total: rrfScores.size });
         } catch (err: any) {
           this.logger.warn('UA vector search failed', { error: err?.message });
         }
       }
 
-      results = [...mergedMap.values()]
-        .sort((a, b) => b.hybridScore - a.hybridScore)
-        .map(r => ({ id: r.id, text: r.text, score: r.hybridScore }));
+      results = [...rrfScores.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([id, rrfScore]) => ({
+          id,
+          text:  resultById.get(id)?.text ?? '',
+          score: rrfScore,
+        }))
+        .filter(r => r.text.length > 0);
 
     } else {
       const vectorResults = await this.textRepository.findByEmbedding(
@@ -693,7 +813,6 @@ export class TextRagService implements TextRagPort {
       });
 
       const topScores   = results.slice(0, 3).map(r => r.score ?? 0);
-
       const avgTopScore = topScores.length
         ? topScores.reduce((a, b) => a + b, 0) / topScores.length
         : 0;
@@ -720,7 +839,7 @@ export class TextRagService implements TextRagPort {
 
     if (results.length === 0) return 'There is no relevant information in knowledge';
 
-    if (useReranking && rerankStrategy !== 'none' && results.length > effectiveLimit) {
+    if (useReranking && rerankStrategy !== 'none' && results.length > effectiveLimit && searchMode !== 'wide') {
       const reranked = await this.reranker.rerank(query, results, {
         topK:   effectiveLimit,
         method: rerankStrategy === 'cross_encoder' ? 'listwise'
@@ -730,7 +849,9 @@ export class TextRagService implements TextRagPort {
       results = reranked.map(r => ({ id: r.item.id, text: r.item.text, score: r.finalScore }));
     }
 
-    results = results.filter(r => r.score > 0.1);
+    const scoreFloor = (useReranking && rerankStrategy !== 'none') ? 0.0163 : 0.01;
+
+    results = results.filter(r => r.score > scoreFloor);
     results = results.filter(r => (r as any).level !== 0);
     results = results.slice(0, effectiveLimit);
 
@@ -740,7 +861,16 @@ export class TextRagService implements TextRagPort {
         const chunkMatches = (text: string, groups: string[][]): boolean => {
           const lower        = text.toLowerCase();
           const translitText = cyrillicToLatin(lower);
-          return groups.every(variants =>
+
+          if (searchMode === 'entity') {
+            return groups.every(variants =>
+              variants.some(v => {
+                const vLower = v.toLowerCase();
+                return lower.includes(vLower) || translitText.includes(cyrillicToLatin(vLower));
+              }),
+            );
+          }
+          return groups.some(variants =>
             variants.some(v => {
               const vLower = v.toLowerCase();
               return lower.includes(vLower) || translitText.includes(cyrillicToLatin(vLower));
@@ -748,7 +878,11 @@ export class TextRagService implements TextRagPort {
           );
         };
 
-        let filtered = results.filter(r => chunkMatches(r.text, nameTokenGroups));
+        let filtered = results.filter((r, i) => {
+          const match = chunkMatches(r.text, nameTokenGroups);
+          this.logger.log('FILTER CHECK =>', { index: i, text: r.text, match });
+          return match;
+        });
 
         if (filtered.length === 0) {
           const surnameGroup = nameTokenGroups[nameTokenGroups.length - 1];
@@ -770,6 +904,13 @@ export class TextRagService implements TextRagPort {
             after:  filtered.length,
           });
           results = filtered;
+        } else {
+          this.logger.warn('EntityPostFilter: no name match found, returning unfiltered results', {
+            query,
+            nameGroups:  nameTokenGroups.map(g => g[0]),
+            topResult:   results[0]?.text.slice(0, 80),
+            resultCount: results.length,
+          });
         }
       }
     }
@@ -800,6 +941,197 @@ export class TextRagService implements TextRagPort {
       model:     doc.model,
     }));
   }
+
+  // ── Shared generation context ─────────────────────────────────────────────
+  //
+  // Both generateAnswer and streamableGenerateAnswer call this.
+  // Returns PreparedContext on success, or { earlyExit: string } when the
+  // pipeline should short-circuit (no results / injection etc.).
+
+  private async prepareGenerationContext(
+    query: string,
+    options?: AskQuestionOptions,
+  ): Promise<PreparedContext | { earlyExit: string }> {
+    const classification = await this.classifyQuery(query);
+    const p: FineTuningParams = classification.params;
+
+    this.logger.log('QueryClassification', {
+      query:      query.slice(0, 60),
+      type:       classification.type,
+      confidence: classification.confidence,
+      params: {
+        searchMode: p.searchMode, limit: p.limit, threshold: p.scoreThreshold,
+        temperature: p.temperature, topP: p.topP, topK: p.topK,
+        maxTokens: p.maxTokens, repeatPenalty: p.repeatPenalty, seed: p.seed,
+      },
+    });
+
+    const retrieveOptions: RetrieveInternalOptions = {
+      limit:                    p.limit,
+      scoreThreshold:           p.scoreThreshold,
+      useHybridSearch:          p.useHybridSearch,
+      useReranking:             p.useReranking,
+      rerankStrategy:           p.rerankStrategy,
+      useQueryTransformation:   p.useQueryTransformation,
+      useContextualCompression: p.useContextualCompression,
+      useConversationMemory:    p.useConversationMemory,
+      filters:                  options?.filters,
+      sessionId:                options?.sessionId,
+      _searchMode:              p.searchMode,
+    };
+
+    // Kick off retrieve and links lookup in parallel
+    const [rawRetrieved, linksResult] = await Promise.all([
+      this.retrieve(query, undefined, retrieveOptions),
+      this.linkService
+        .findLinksForQuery(query)
+        .then(r => (r.found ? r : this.linkService.findLinksForContext(query)))
+        .catch((err: any) => {
+          this.logger.warn('prepareGenerationContext: linkService failed', { error: err?.message });
+          return { found: false, block: '' };
+        }),
+    ]);
+
+    if (typeof rawRetrieved === 'string') {
+      return { earlyExit: rawRetrieved };
+    }
+
+    // ── Score filtering (factual queries only) ──────────────────────────────
+    const effectiveThreshold =
+      classification.type === 'factual'
+        ? Math.min(p.scoreThreshold, FACTUAL_SCORE_THRESHOLD_CAP)
+        : p.scoreThreshold;
+
+    const applyFilter = classification.type === 'factual' && classification.confidence > 0.8;
+
+    const preFiltered =
+      applyFilter && effectiveThreshold
+        ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
+        : rawRetrieved;
+
+    const postFilterResults =
+      preFiltered.length > 0
+        ? preFiltered
+        : (() => {
+            this.logger.warn('Score filter removed all results, falling back to unfiltered', {
+              rawCount:  rawRetrieved.length,
+              threshold: effectiveThreshold,
+            });
+            return rawRetrieved.slice(0, 3);
+          })();
+
+    const retrieved = p.useParentExpansion
+      ? await this.expandToParentContext(postFilterResults)
+      : postFilterResults;
+
+    if (retrieved.length === 0) {
+      return { earlyExit: 'Відповідь відсутня у наданій інформації.' };
+    }
+
+    // ── Knowledge graph ──────────────────────────────────────────────────────
+    const useKG = options?.useKnowledgeGraph ?? p.useKnowledgeGraph;
+    const kgContext = useKG ? await this.queryKnowledgeGraph(query) : undefined;
+
+    // ── Build prompt ─────────────────────────────────────────────────────────
+    const context = retrieved
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, classification.type === 'entity' ? 10 : 7)
+      .map(doc => doc.text)
+      .join('\n\n');
+
+    let prompt = this.buildPrompt(classification.type, context, query);
+
+    if (kgContext) {
+      prompt +=
+        `\n\n<knowledge_graph>\n${kgContext}\n</knowledge_graph>\n` +
+        `(Граф знань надає додатковий контекст про сутності, але пріоритет — документальний контекст вище.)`;
+    }
+
+    if (options?.conversationHistory?.length) {
+      const historyBlock =
+        '\n====================\nІСТОРІЯ РОЗМОВИ:\n' +
+        options.conversationHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n') +
+        '\n';
+      prompt += `\n\n<conversation_history>\n${historyBlock}\n</conversation_history>`;
+    }
+
+    if (classification.type !== 'entity') {
+      prompt += `\n\n<linksResult>\n${linksResult.block}\n</linksResult>
+
+<links_usage_rules>
+  - Використовуй linksResult лише якщо хоча б одне посилання прямо відповідає на запит
+  - Якщо посилання лише дотично пов'язані — НЕ використовуй їх
+  - Не вставляй посилання, якщо відповідь і так повна без них
+  - Максимум 1–3 посилання
+</links_usage_rules>`;
+    }
+
+    prompt += `\n\n<question>${query}</question>\n\nВідповідь (структурована, на основі контексту):`;
+
+    return {
+      classification,
+      p,
+      retrieved,
+      prompt,
+      generationParams: {
+        temperature:   p.temperature,
+        topP:          p.topP,
+        topK:          p.topK,
+        maxTokens:     p.maxTokens,
+        repeatPenalty: p.repeatPenalty,
+        seed:          p.seed,
+      },
+    };
+  }
+
+  // ── Confidence check (extracted so it's independently testable) ───────────
+
+  private async runConfidenceCheck(
+    query: string,
+    answer: string,
+    retrieved: IDocumentWithEmbedding[],
+  ): Promise<void> {
+    const verification = await this.confidencePort.verify(
+      answer,
+      retrieved.map(r => r.text),
+    );
+
+    this.logger.log('Stream_Confidence', {
+      score:    verification.confidence.score,
+      tier:     verification.confidence.tier,
+      grounded: verification.grounded,
+      verdict:  verification.llmVerdict,
+    });
+
+    if (
+      !verification.grounded &&
+      verification.llmVerdict === 'NO' &&
+      verification.confidence.score < 0.4
+    ) {
+      this.logger.warn('Stream_Confidence: potential hallucination detected', {
+        query:   query.slice(0, 80),
+        score:   verification.confidence.score,
+        verdict: verification.llmVerdict,
+      });
+    }
+  }
+
+  // ── Persist session turn (non-blocking helper) ────────────────────────────
+
+  private persistSessionTurn(sessionId: string, query: string, answer: string): void {
+    setImmediate(() => {
+      this.ollama
+        .embed(query)
+        .then(emb =>
+          this.conversationRepository.addTurn(
+            sessionId, query, answer, extractEmbedding(emb),
+          ),
+        )
+        .catch(err => this.logger.warn('Session embed failed', { error: err?.message }));
+    });
+  }
+
+  // ── Prompt templates ──────────────────────────────────────────────────────
 
   private buildPrompt(
     type: 'entity' | 'factual' | 'wide',
@@ -891,51 +1223,63 @@ export class TextRagService implements TextRagPort {
       wide: `
       Ти — асистент корпоративної бази знань.
 
+      Створи цілісну, структуровану та практично корисну відповідь на основі НАДАНОГО КОНТЕКСТУ.
+
+      ## ГОЛОВНЕ ПРАВИЛО
       Використовуй ТІЛЬКИ інформацію з <context>.
-      ЗАБОРОНЕНО вигадувати факти.
+      Не додавай жодних фактів, припущень, пояснень, прикладів або деталей, яких немає в контексті.
+      Якщо певний аспект теми не покритий — просто не згадуй його.
 
       <context>
       ${context}
       </context>
 
-      ЗАВДАННЯ:
+      ## ПИТАННЯ
+      ${query}
 
-      1. Уважно прочитай ВЕСЬ контекст
-      2. Визнач усі ключові теми
-      3. ОБ'ЄДНАЙ інформацію у логічні блоки
-      4. Побудуй цілісне пояснення теми
-      5. Якщо контекст містить лише частину інформації — розкрий те, що є, повністю
+      ## ЩО ПОТРІБНО ЗРОБИТИ
+      - Уважно проаналізуй ВЕСЬ контекст
+      - Визнач головну тему та всі важливі підтеми
+      - Об'єднай інформацію з різних фрагментів у логічні змістовні блоки
+      - Прибери повтори, дублікати та фрагментарність
+      - Якщо фрагменти доповнюють один одного — синтезуй їх у повний опис
+      - Якщо є інструкція або процедура — оформи її як послідовність кроків
+      - Якщо є правила, умови, винятки або обмеження — виділи їх окремо
+      - Якщо контекст розкриває лише частину теми — максимально повно розкрий саме цю частину
 
-      ФОРМАТ ВІДПОВІДІ:
+      ## ЯК ПИСАТИ
+      Пиши як готову сторінку внутрішньої бази знань або робочу інструкцію.
+
+      Відповідь має бути: змістовною, цілісною, логічною, без повторів, без води,
+      без сирого стилю з фрагментів, без мета-коментарів.
+
+      ## НЕ МОЖНА
+      Не пиши: "у контексті зазначено", "з наданої інформації видно", "ось що знайдено",
+      "контекст містить", "у документах сказано".
+
+      Не можна: перелічувати уривки, посилатися на документи, писати як search results dump,
+      відмовлятись через неповний контекст, згадувати що контекст частковий.
+
+      ## ПРІОРИТЕТИ
+      1. Точність  2. Повнота в межах контексту  3. Логічна структура
+      4. Практична корисність  5. Читабельність
+
+      ## ФОРМАТ ВІДПОВІДІ
 
       ## Короткий вступ
-      Стислий опис теми
+      Стисло поясни суть теми.
 
       ## Основна частина
-      Кілька логічних підтем (сам визначаєш структуру)
+      Розбий матеріал на логічні підтеми та поясни їх як завершений матеріал.
 
-      - під кожною темою — узагальнення, а НЕ цитати
+      ## Процес / кроки
+      Показуй лише якщо в контексті є процедура або інструкція.
 
-      ## (опційно) Процес / кроки
-      Якщо є інструкції — подай як послідовність дій
+      ## Важливі умови / правила / винятки
+      Показуй лише якщо вони є в контексті.
 
-      ВАЖЛИВО:
-
-      ❌ НЕ МОЖНА:
-      - "Ось фрагменти..."
-      - список знайдених шматків тексту
-      - посилання на документи
-      - повтори
-      - відмовлятись відповідати через "неповний контекст"
-
-      ✅ ПОТРІБНО:
-      - писати як готову статтю / інструкцію
-      - зшивати інформацію з різних місць
-      - використовувати максимум контексту
-      - якщо якийсь аспект не покритий — просто пропусти його без згадки
-
-      Питання:
-      ${query}
+      ## Практичні примітки
+      Показуй лише якщо в контексті є важливі нюанси використання або операційні деталі.
 
       Відповідь:
       `,
@@ -944,137 +1288,26 @@ export class TextRagService implements TextRagPort {
     return PROMPTS[type];
   }
 
+  // ── generateAnswer ────────────────────────────────────────────────────────
+
   async generateAnswer(
     query: string,
-    options?: {
-      limit?: number;
-      scoreThreshold?: number;
-      filters?: Array<{ field: string; value: any; operator?: string }>;
-      useHybridSearch?: boolean;
-      useReranking?: boolean;
-      rerankStrategy?: 'cross_encoder' | 'llm_based' | 'none' | 'hybrid';
-      useQueryTransformation?: boolean;
-      useContextualCompression?: boolean;
-      useConversationMemory?: boolean;
-      useKnowledgeGraph?: boolean;
-      useCitationTracking?: boolean;
-      temperature?: number;
-      topP?: number;
-      topK?: number;
-      maxTokens?: number;
-      includeSources?: boolean;
-      sessionId?: string;
-      conversationHistory?: Array<{ role: string; content: string }>;
-    },
+    options?: AskQuestionOptions,
   ): Promise<IGenerateAnswer | { answer: string }> {
-    PromptInjectionGuard.assertSafe(query);
-
-    const ragConfig = this.configService.get<TRagConfig>(RAG_CONFIG);
-
-    const classification = await this.queryClassifier.classify(query);
-    const p: FineTuningParams = classification.params;
-
-    this.logger.log('QueryClassification', {
-      query:      query.slice(0, 60),
-      type:       classification.type,
-      confidence: classification.confidence,
-      params: {
-        searchMode: p.searchMode, limit: p.limit, threshold: p.scoreThreshold,
-        temperature: p.temperature, topP: p.topP, topK: p.topK,
-        maxTokens: p.maxTokens, repeatPenalty: p.repeatPenalty, seed: p.seed,
-      },
-    });
-
-    const temperature   = p.temperature;
-    const topP          = p.topP;
-    const topK          = p.topK;
-    const maxTokens     = p.maxTokens;
-    const repeatPenalty = p.repeatPenalty;
-    const seed          = p.seed;
-
-    const retrieveOptions: RetrieveInternalOptions = {
-      limit:                    p.limit,
-      scoreThreshold:           p.scoreThreshold,
-      useHybridSearch:          p.useHybridSearch,
-      useReranking:             p.useReranking,
-      rerankStrategy:           p.rerankStrategy,
-      useQueryTransformation:   p.useQueryTransformation,
-      useContextualCompression: p.useContextualCompression,
-      useConversationMemory:    p.useConversationMemory,
-      filters:                  options?.filters,
-      sessionId:                options?.sessionId,
-      _searchMode:              p.searchMode,
-    };
-
-    const rawRetrieved = await this.retrieve(query, undefined, retrieveOptions);
-
-    if (typeof rawRetrieved === 'string') return { answer: rawRetrieved };
-    if (!Array.isArray(rawRetrieved)) return { answer: String(rawRetrieved) };
-
-    const configThreshold = ragConfig?.textRagScoreThreshold;
-
-
-
-    const applyConfigFilter = classification.type === 'factual'
-      && classification.confidence > 0.8;
-
-    const effectiveThreshold = classification.type === 'factual'
-      ? Math.min(p.scoreThreshold, FACTUAL_SCORE_THRESHOLD_CAP)
-      : p.scoreThreshold;
-
-    // Apply threshold filter only for high-confidence factual queries to avoid over-filtering
-    const filtered = applyConfigFilter
-      ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
-      : rawRetrieved;
-
-
-    const postFilterResults = filtered.length > 0 ? filtered : (() => {
-      this.logger.warn('Score filter removed all results, falling back to top-3 unfiltered', {
-        rawCount: rawRetrieved.length,
-        threshold: effectiveThreshold,
-      });
-      return rawRetrieved.slice(0, 3);
-    })();
-
-    const retrieved = p.useParentExpansion
-      ? await this.expandToParentContext(postFilterResults)
-      : postFilterResults;
-
-    const useKG = options?.useKnowledgeGraph ?? p.useKnowledgeGraph;
-    let kgContext: string | undefined;
-    if (useKG) kgContext = await this.queryKnowledgeGraph(query);
-
-    if (retrieved.length === 0) {
-      return {
-        answer:         'Відповідь відсутня у наданій інформації.',
-        relevantChunks: 0,
-        citations:      [],
-      };
+    try {
+      PromptInjectionGuard.assertSafe(query);
+    } catch (err: any) {
+      return { answer: err?.message ?? 'Prompt injection detected' };
     }
 
-    const context = retrieved
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, 8)
-      .map(doc => doc.text)
-      .join('\n\n');
+    const ctx = await this.prepareGenerationContext(query, options);
 
-    let prompt = this.buildPrompt(classification.type, context, query);
-
-    if (kgContext) {
-      prompt +=
-        `\n\n<knowledge_graph>\n${kgContext}\n</knowledge_graph>\n` +
-        `(Граф знань надає додатковий контекст про сутності, але пріоритет — документальний контекст вище.)`;
+    if ('earlyExit' in ctx) {
+      return { answer: ctx.earlyExit };
     }
 
-    if (options?.conversationHistory?.length) {
-      const historyBlock =
-        '\n====================\nІСТОРІЯ РОЗМОВИ:\n' +
-        options.conversationHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n') +
-        '\n';
-      prompt += `\n\n<conversation_history>\n${historyBlock}\n</conversation_history>`;
-    }
-
-    prompt += `\n\n<question>${query}</question>\n\nВідповідь (структурована, на основі контексту):`;
+    const { classification, p, retrieved, prompt, generationParams } = ctx;
+    const { temperature, topP, topK, maxTokens, repeatPenalty, seed } = generationParams;
 
     const answer = await this.ollama.getRagResponseByPrompt(prompt, {
       temperature,
@@ -1112,9 +1345,8 @@ export class TextRagService implements TextRagPort {
       confidence:     typeof topScore === 'number' ? topScore : undefined,
       queryType:       classification.type,
       queryConfidence: classification.confidence,
-      generationParams: { temperature, topP, topK, maxTokens, repeatPenalty, seed },
-      knowledgeGraphContext: kgContext,
-      conversationContext:   !!options?.sessionId,
+      generationParams,
+      conversationContext: !!options?.sessionId,
       ...(options?.includeSources && {
         sources: retrieved.map(doc => ({
           id:       doc.id,
@@ -1126,28 +1358,11 @@ export class TextRagService implements TextRagPort {
     };
   }
 
+  // ── streamableGenerateAnswer ──────────────────────────────────────────────
+
   async *streamableGenerateAnswer(
     query: string,
-    options?: {
-      limit?: number;
-      scoreThreshold?: number;
-      filters?: Array<{ field: string; value: any; operator?: string }>;
-      useHybridSearch?: boolean;
-      useReranking?: boolean;
-      rerankStrategy?: 'cross_encoder' | 'llm_based' | 'none' | 'hybrid';
-      useQueryTransformation?: boolean;
-      useContextualCompression?: boolean;
-      useConversationMemory?: boolean;
-      useKnowledgeGraph?: boolean;
-      useCitationTracking?: boolean;
-      temperature?: number;
-      topP?: number;
-      topK?: number;
-      maxTokens?: number;
-      includeSources?: boolean;
-      sessionId?: string;
-      conversationHistory?: Array<{ role: string; content: string }>;
-    },
+    options?: AskQuestionOptions,
   ): AsyncGenerator<IStreamChunk> {
     try {
       PromptInjectionGuard.assertSafe(query);
@@ -1156,115 +1371,19 @@ export class TextRagService implements TextRagPort {
       return;
     }
 
-    const classification = await this.queryClassifier.classify(query);
-    const p: FineTuningParams = classification.params;
+    const ctx = await this.prepareGenerationContext(query, options);
 
-    const temperature   = p.temperature;
-    const topP          = p.topP;
-    const topK          = p.topK;
-    const maxTokens     = p.maxTokens;
-    const repeatPenalty = p.repeatPenalty;
-    const seed          = p.seed;
-
-    const retrieveOptions: RetrieveInternalOptions = {
-      limit:                    p.limit,
-      scoreThreshold:           p.scoreThreshold,
-      useHybridSearch:          p.useHybridSearch,
-      useReranking:             p.useReranking,
-      rerankStrategy:           p.rerankStrategy,
-      useQueryTransformation:   p.useQueryTransformation,
-      useContextualCompression: p.useContextualCompression,
-      useConversationMemory:    p.useConversationMemory,
-      filters:                  options?.filters,
-      sessionId:                options?.sessionId,
-      _searchMode:              p.searchMode,
-    };
-
-    const [rawRetrieved, linksResult] = await Promise.all([
-      this.retrieve(query, undefined, retrieveOptions),
-      this.linkService.findLinksForQuery(query).then(result =>
-        result.found ? result : this.linkService.findLinksForContext(query),
-      ),
-    ]);
-
-    if (typeof rawRetrieved === 'string') {
+    if ('earlyExit' in ctx) {
       yield { event: 'metadata', metadata: { relevantChunks: 0, citations: [] } };
-      yield { event: 'token', token: rawRetrieved };
-      yield { event: 'done', metadata: { relevantChunks: 0, citations: [] } };
+      yield { event: 'token',    token: ctx.earlyExit };
+      yield { event: 'done',     metadata: { relevantChunks: 0, citations: [] } };
       return;
     }
 
-    const effectiveThreshold = classification.type === 'factual'
-      ? Math.min(p.scoreThreshold, FACTUAL_SCORE_THRESHOLD_CAP)
-      : p.scoreThreshold;
+    const { classification, p, retrieved, prompt, generationParams } = ctx;
+    const { temperature, topP, topK, maxTokens, repeatPenalty, seed } = generationParams;
 
-    const applyFilter = classification.type === 'factual'
-      && classification.confidence > 0.8;
-
-    const preFiltered = applyFilter && effectiveThreshold
-      ? rawRetrieved.filter(el => (el.score ?? 0) >= effectiveThreshold)
-      : rawRetrieved;
-
-    const postFilterResults = preFiltered.length > 0 ? preFiltered : rawRetrieved.slice(0, 3);
-
-    const retrieved = p.useParentExpansion
-      ? await this.expandToParentContext(postFilterResults)
-      : postFilterResults;
-
-    if (retrieved.length === 0) {
-      yield {
-        event: 'metadata',
-        metadata: { relevantChunks: 0, citations: [], queryType: classification.type },
-      };
-      yield { event: 'token', token: 'Відповідь відсутня у наданій інформації.' };
-      yield { event: 'done', metadata: { relevantChunks: 0, citations: [] } };
-      return;
-    }
-
-    const useKG = options?.useKnowledgeGraph ?? p.useKnowledgeGraph;
-    let kgContext: string | undefined;
-    if (useKG) kgContext = await this.queryKnowledgeGraph(query);
-
-    const context = retrieved
-      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-      .slice(0, 8) 
-      .map(doc => doc.text)
-      .join('\n\n');
-
-    let prompt = this.buildPrompt(classification.type, context, query);
-
-    if (kgContext) {
-      prompt +=
-        `\n\n<knowledge_graph>\n${kgContext}\n</knowledge_graph>\n` +
-        `(Граф знань надає додатковий контекст про сутності, але пріоритет — документальний контекст вище.)`;
-    }
-
-    if (options?.conversationHistory?.length) {
-      const historyBlock =
-        '\n====================\nІСТОРІЯ РОЗМОВИ:\n' +
-        options.conversationHistory.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n') +
-        '\n';
-      prompt += `\n\n<conversation_history>\n${historyBlock}\n</conversation_history>`;
-    }
-
-    if (classification.type !== 'entity') {
-      prompt += `
-      \n\n<linksResult>
-      ${linksResult.block}
-      </linksResult>
-
-      <links_usage_rules>
-        - Використовуй linksResult лише якщо хоча б одне посилання прямо відповідає на запит користувача
-        - Якщо посилання лише дотично пов’язані — НЕ використовуй їх
-        - Не вставляй посилання, якщо відповідь і так повна без них
-        - Максимум 1–3 посилання
-        - Не додавай блок посилань автоматично
-      </links_usage_rules>
-    `;
-    }
-
-    prompt += `\n\n<question>${query}</question>\n\nВідповідь (структурована, на основі контексту):`;
-
+    // Emit metadata before first token so the client can show context info immediately
     yield {
       event: 'metadata',
       metadata: {
@@ -1272,9 +1391,8 @@ export class TextRagService implements TextRagPort {
         confidence:       retrieved[0]?.score,
         queryType:        classification.type,
         queryConfidence:  classification.confidence,
-        generationParams: { temperature, topP, topK, maxTokens, repeatPenalty, seed },
-        knowledgeGraphContext: kgContext,
-        conversationContext:   !!options?.sessionId,
+        generationParams,
+        conversationContext: !!options?.sessionId,
         ...(options?.includeSources && {
           sources: retrieved.map(doc => ({
             id:       doc.id,
@@ -1286,6 +1404,7 @@ export class TextRagService implements TextRagPort {
       },
     };
 
+    // Stream tokens
     let fullAnswer = '';
     try {
       for await (const token of this.ollama.getRagResponseByPromptStream(prompt, {
@@ -1304,56 +1423,31 @@ export class TextRagService implements TextRagPort {
       return;
     }
 
-    try {
-      const chunkTexts   = retrieved.map(r => r.text);
-      const verification = await this.confidencePort.verify(fullAnswer, chunkTexts);
+    // Fire-and-forget confidence check — doesn't block done event
+    this.runConfidenceCheck(query, fullAnswer, retrieved).catch(() => {});
 
-      this.logger.log('Stream_Confidence', {
-        score:    verification.confidence.score,
-        tier:     verification.confidence.tier,
-        grounded: verification.grounded,
-        verdict:  verification.llmVerdict,
-      });
-
-      if (
-        !verification.grounded &&
-        verification.llmVerdict === 'NO' &&
-        verification.confidence.score < 0.4
-      ) {
-        fullAnswer = 'Немає релевантної відповіді';
-        yield { event: 'correction', correctedAnswer: fullAnswer, reason: 'hallucination' };
-      }
-    } catch (err: any) {
-      this.logger.warn('Stream_Confidence failed', { error: err?.message });
-    }
-
+    // Citations
     const useCitations = options?.useCitationTracking ?? p.useCitationTracking;
-    let citations: TrackCitation[] = [];
-    if (useCitations) {
-      const tracked = this.trackCitations(fullAnswer, retrieved);
-      citations     = tracked.citations;
-    }
+    const citations = useCitations
+      ? this.trackCitations(fullAnswer, retrieved).citations
+      : [];
 
+    // Persist conversation turn (non-blocking)
     if (options?.sessionId) {
-      const embedding = await this.ollama.embed(query);
-      await this.conversationRepository.addTurn(
-        options.sessionId, query, fullAnswer, extractEmbedding(embedding),
-      );
+      this.persistSessionTurn(options.sessionId, query, fullAnswer);
     }
 
-    yield {
-      event: 'done',
-      metadata: {
-        citations,
-        relevantChunks: retrieved.length,
-      },
-    };
+    yield { event: 'done', metadata: { citations, relevantChunks: retrieved.length } };
   }
+
+  // ── deleteById ────────────────────────────────────────────────────────────
 
   async deleteById(id: string): Promise<IDeleteDocument> {
     await this.textRepository.deleteById(id);
     return { deletedDocumentId: id };
   }
+
+  // ── Citation tracking ─────────────────────────────────────────────────────
 
   private trackCitations(
     answer: string,
@@ -1382,7 +1476,7 @@ export class TextRagService implements TextRagPort {
         const index  = docIndices.get(cite.documentId);
         const anchor = cite.text.substring(0, 50).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         formattedAnswer = formattedAnswer.replace(
-          new RegExp(anchor, 'g'),
+          new RegExp(anchor),
           match => `${match} [${index}]`,
         );
       });
@@ -1398,6 +1492,8 @@ export class TextRagService implements TextRagPort {
     const matched = needleWords.filter(word => haystackLower.includes(word));
     return matched.length / needleWords.length > 0.6;
   }
+
+  // ── Parent context expansion ──────────────────────────────────────────────
 
   private async expandToParentContext(
     results: Array<IDocumentWithEmbedding>,
@@ -1435,11 +1531,18 @@ export class TextRagService implements TextRagPort {
 
     const merged: Array<IDocumentWithEmbedding> = [];
     for (const [parentId, { doc, children }] of parentGroups) {
-      const pText        = parentTexts.get(parentId) ?? doc.parentText ?? '';
+      const pText          = parentTexts.get(parentId) ?? doc.parentText ?? '';
       const uniqueChildren = [...new Set(children)];
-      const combinedText = pText
+      const combinedText   = pText
         ? `${pText}\n\n${uniqueChildren.join('\n\n')}`
         : uniqueChildren.join('\n\n');
+
+      if (!pText) {
+        this.logger.warn('expandToParentContext: parent text not found', {
+          parentId,
+          childCount: uniqueChildren.length,
+        });
+      }
 
       merged.push({
         ...doc,
@@ -1449,6 +1552,8 @@ export class TextRagService implements TextRagPort {
 
     return [...merged, ...noParent];
   }
+
+  // ── Knowledge graph ───────────────────────────────────────────────────────
 
   private async extractKnowledgeGraph(text: string, documentId: string): Promise<void> {
     try {

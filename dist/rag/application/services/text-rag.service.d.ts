@@ -1,13 +1,14 @@
 import { ConfigService } from '@nestjs/config';
-import { OllamaService } from 'src/rag/infrastructure/ollama/ollama.service';
-import { RagQdrantService } from 'src/rag/infrastructure/qdrant/rag-qdrant.service';
+import { Redis } from "@upstash/redis";
+import { OllamaService } from "../../infrastructure/ollama/ollama.service";
+import { RagQdrantService } from "../../infrastructure/qdrant/rag-qdrant.service";
 import { ITextDocumentRepository } from '../../domain/repositories/text-document.repository';
 import { IDeleteDocument, IDocumentWithEmbedding, IDocumentWithoutEmbedding, IGenerateAnswer, IStreamChunk, IUploadKnowledge } from '../common/interfaces/rag-documents.interfaces';
-import { TextRagPort } from 'src/rag/domain/ports/textRagPort';
+import { TextRagPort } from "../../domain/ports/textRagPort";
 import { UploadFolderOptions } from '../commands/upload-folder.command';
 import { IKnowledgeGraphService } from '../../infrastructure/neo4j/neo4j-knowledge-graph.service';
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
-import { IConversationSessionRepository } from 'src/rag/domain/ports/conversation-session.repository.port';
+import { LoggerPort } from "../../shared/application/ports/logger.port";
+import { IConversationSessionRepository } from "../../domain/ports/conversation-session.repository.port";
 import { AskQuestionOptions } from '../commands/ask-question.command';
 import { SearchMode } from '../../infrastructure/qdrant/rag-qdrant.service';
 import { IConfidencePort } from '../../domain/ports/confidence.port';
@@ -26,12 +27,14 @@ export declare class TextRagService implements TextRagPort {
     private readonly logger;
     private readonly confidencePort;
     private readonly linkService;
+    private readonly redis;
     private queryTransformer;
     private reranker;
     private hybridSearch;
     private contextualCompressor;
     private queryClassifier;
-    constructor(configService: ConfigService, ollama: OllamaService, qdrantService: RagQdrantService, textRepository: ITextDocumentRepository, conversationRepository: IConversationSessionRepository, knowledgeGraph: IKnowledgeGraphService, logger: LoggerPort, confidencePort: IConfidencePort, linkService: LinkService);
+    private readonly classificationCache;
+    constructor(configService: ConfigService, ollama: OllamaService, qdrantService: RagQdrantService, textRepository: ITextDocumentRepository, conversationRepository: IConversationSessionRepository, knowledgeGraph: IKnowledgeGraphService, logger: LoggerPort, confidencePort: IConfidencePort, linkService: LinkService, redis: Redis);
     uploadKnowledgeFromFile(file: Express.Multer.File, options?: UploadFolderOptions): Promise<IUploadKnowledge>;
     uploadMarkdownFolder(files: Express.Multer.File[], options?: UploadFolderOptions): Promise<{
         totalChunks: number;
@@ -51,65 +54,17 @@ export declare class TextRagService implements TextRagPort {
     private frequencyKeywords;
     private embedAndSaveChunks;
     private buildFileId;
+    private classifyQuery;
     retrieve(query: string, limit?: number, options?: RetrieveInternalOptions): Promise<Array<IDocumentWithEmbedding> | string>;
     getAllDocuments(): Promise<IDocumentWithoutEmbedding[]>;
+    private prepareGenerationContext;
+    private runConfidenceCheck;
+    private persistSessionTurn;
     private buildPrompt;
-    generateAnswer(query: string, options?: {
-        limit?: number;
-        scoreThreshold?: number;
-        filters?: Array<{
-            field: string;
-            value: any;
-            operator?: string;
-        }>;
-        useHybridSearch?: boolean;
-        useReranking?: boolean;
-        rerankStrategy?: 'cross_encoder' | 'llm_based' | 'none' | 'hybrid';
-        useQueryTransformation?: boolean;
-        useContextualCompression?: boolean;
-        useConversationMemory?: boolean;
-        useKnowledgeGraph?: boolean;
-        useCitationTracking?: boolean;
-        temperature?: number;
-        topP?: number;
-        topK?: number;
-        maxTokens?: number;
-        includeSources?: boolean;
-        sessionId?: string;
-        conversationHistory?: Array<{
-            role: string;
-            content: string;
-        }>;
-    }): Promise<IGenerateAnswer | {
+    generateAnswer(query: string, options?: AskQuestionOptions): Promise<IGenerateAnswer | {
         answer: string;
     }>;
-    streamableGenerateAnswer(query: string, options?: {
-        limit?: number;
-        scoreThreshold?: number;
-        filters?: Array<{
-            field: string;
-            value: any;
-            operator?: string;
-        }>;
-        useHybridSearch?: boolean;
-        useReranking?: boolean;
-        rerankStrategy?: 'cross_encoder' | 'llm_based' | 'none' | 'hybrid';
-        useQueryTransformation?: boolean;
-        useContextualCompression?: boolean;
-        useConversationMemory?: boolean;
-        useKnowledgeGraph?: boolean;
-        useCitationTracking?: boolean;
-        temperature?: number;
-        topP?: number;
-        topK?: number;
-        maxTokens?: number;
-        includeSources?: boolean;
-        sessionId?: string;
-        conversationHistory?: Array<{
-            role: string;
-            content: string;
-        }>;
-    }): AsyncGenerator<IStreamChunk>;
+    streamableGenerateAnswer(query: string, options?: AskQuestionOptions): AsyncGenerator<IStreamChunk>;
     deleteById(id: string): Promise<IDeleteDocument>;
     private trackCitations;
     private findSimilarContent;

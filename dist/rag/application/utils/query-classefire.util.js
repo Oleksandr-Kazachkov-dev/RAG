@@ -86,7 +86,6 @@ class QueryClassifier {
         if (preGuard !== null) {
             return this.build(preGuard, 0.9);
         }
-        console.log('preGuard :>> ', preGuard);
         const prompt = `You are a query classifier for a Ukrainian corporate knowledge base RAG system.
 Classify the query into EXACTLY ONE type. Reply ONLY with valid JSON — no markdown, no commentary.
 
@@ -137,7 +136,6 @@ JSON: {"type": "entity" | "factual" | "wide", "confidence": 0.0-1.0}`;
             const parsed = JSON.parse(match[0]);
             if (!PROFILE_BY_TYPE[parsed.type])
                 return this.default();
-            console.log('parsed.type :>> ', parsed.type);
             const isLinkQuery = /посилання|лінк[аи]|сайт[іу]?\b|url\b|link\b/i.test(query);
             if (isLinkQuery && parsed.type === 'factual') {
                 return this.build('factual', parsed.confidence, {

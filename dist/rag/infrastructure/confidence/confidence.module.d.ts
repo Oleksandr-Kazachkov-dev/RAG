@@ -1,4 +1,4 @@
-import { ConfidenceService } from "src/rag/application/services/confidence.service";
+import { ConfidenceService } from "../../application/services/confidence.service";
 export declare const CONFIDENCE_PROVIDERS: (typeof ConfidenceService | {
     provide: string;
     useExisting: typeof ConfidenceService;

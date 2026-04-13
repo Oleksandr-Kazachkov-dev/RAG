@@ -1,4 +1,4 @@
-import { IKnowledgeLink, LinkType } from 'src/rag/domain/interfaces/knowledge-link.interface';
+import { IKnowledgeLink, LinkType } from "../../domain/interfaces/knowledge-link.interface";
 export interface ExtractedLink {
     url: string;
     label: string;

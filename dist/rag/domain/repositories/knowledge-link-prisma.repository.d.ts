@@ -1,5 +1,5 @@
-import { IKnowledgeLink, IKnowledgeLinkRepository } from 'src/rag/domain/interfaces/knowledge-link.interface';
-import { PrismaService } from 'src/rag/infrastructure/prisma/prisma.service';
+import { IKnowledgeLink, IKnowledgeLinkRepository } from "../interfaces/knowledge-link.interface";
+import { PrismaService } from "../../infrastructure/prisma/prisma.service";
 export declare class KnowledgeLinkPrismaRepository implements IKnowledgeLinkRepository {
     private readonly prisma;
     constructor(prisma: PrismaService);

@@ -7,6 +7,7 @@ import { S3StorageService } from './infrastructure/s3/s3.storage.service';
 import { QdrantModule } from './infrastructure/qdrant/qdrant.module';
 import { PrismaModule } from './infrastructure/prisma/prisma.module';
 import { Neo4jModule } from './infrastructure/neo4j/neo4j.module';
+import { RedisModule } from './infrastructure/redis/redis.module';
 import { QdrantTextDocumentRepository } from './infrastructure/qdrant/repositories/qdrant-text-document.repository';
 import { QdrantImageDocumentRepository } from './infrastructure/qdrant/repositories/qdrant-image-document.repository';
 import { Neo4jKnowledgeGraphService } from './infrastructure/neo4j/neo4j-knowledge-graph.service';
@@ -54,6 +55,7 @@ import { IndexLinksCommand } from './application/commands/extract-links.command'
 @Module({
   imports: [
     ConfigModule.forFeature(ragConfig),
+    RedisModule,   // <— gives REDIS_CLIENT to every provider in this module + @Global makes it available in OllamaModule/PrismaModule too
     OllamaModule,
     S3Module,
     QdrantModule,
@@ -112,16 +114,16 @@ export class RagModule implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    this.bus.register(AskQuestionCommand,     this.askQuestion);
-    this.bus.register(UploadKnowledgeCommand, this.uploadKnowledge);
-    this.bus.register(DeleteDocumentCommand,  this.deleteDocument);
-    this.bus.register(ProcessImagesCommand,   this.processImages);
-    this.bus.register(DeleteImageCommand,     this.deleteImage);
-    this.bus.register(UploadFolderCommand,    this.uploadFolder);
-    this.bus.register(GetAllDocumentsQuery,   this.getAllDocuments);
-    this.bus.register(GetAllImagesQuery,      this.getAllImages);
+    this.bus.register(AskQuestionCommand,      this.askQuestion);
+    this.bus.register(UploadKnowledgeCommand,  this.uploadKnowledge);
+    this.bus.register(DeleteDocumentCommand,   this.deleteDocument);
+    this.bus.register(ProcessImagesCommand,    this.processImages);
+    this.bus.register(DeleteImageCommand,      this.deleteImage);
+    this.bus.register(UploadFolderCommand,     this.uploadFolder);
+    this.bus.register(GetAllDocumentsQuery,    this.getAllDocuments);
+    this.bus.register(GetAllImagesQuery,       this.getAllImages);
     this.bus.register(GetImagesByKeywordQuery, this.getImagesByKeyword);
     this.bus.register(RetrieveDocumentsQuery,  this.retrieveDocuments);
-    this.bus.register(IndexLinksCommand,      this.extractLinks)
+    this.bus.register(IndexLinksCommand,       this.extractLinks);
   }
 }

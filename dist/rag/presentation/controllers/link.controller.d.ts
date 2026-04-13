@@ -1,7 +1,7 @@
 import { LinkService } from '../../application/services/link.service';
 import { IKnowledgeLink, IKnowledgeLinkRepository } from '../../domain/interfaces/knowledge-link.interface';
 import { LoggerPort } from '../../shared/application/ports/logger.port';
-import { ExtractLinksHandler } from 'src/rag/application/handlers/extract-links.handler';
+import { ExtractLinksHandler } from "../../application/handlers/extract-links.handler";
 export interface GetAllLinksResponse {
     total: number;
     links: IKnowledgeLink[];

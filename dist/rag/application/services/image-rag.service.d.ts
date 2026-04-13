@@ -1,12 +1,12 @@
 import { ConfigService } from '@nestjs/config';
 import { IImageDocumentRepository } from '../../domain/repositories/image-document.repository';
-import { IUploadedFile } from 'src/rag/domain/interfaces/upload-folder.interface';
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
+import { IUploadedFile } from "../../domain/interfaces/upload-folder.interface";
+import { LoggerPort } from "../../shared/application/ports/logger.port";
 import { IUploadImage, IDeleteImage, IImageWithScore, IImageWithoutScore } from '../common/interfaces/image.interfaces';
-import { IStoragePort } from 'src/rag/domain/ports/storage.port';
-import { IChatLlmPort } from 'src/rag/domain/ports/chat-llm.port';
-import { IEmbeddingPort } from 'src/rag/domain/ports/embedding.port';
-import { ImageRagPort } from 'src/rag/domain/ports/image-rag.port';
+import { IStoragePort } from "../../domain/ports/storage.port";
+import { IChatLlmPort } from "../../domain/ports/chat-llm.port";
+import { IEmbeddingPort } from "../../domain/ports/embedding.port";
+import { ImageRagPort } from "../../domain/ports/image-rag.port";
 export declare class ImageRagService implements ImageRagPort {
     private readonly configService;
     private readonly embeddingPort;

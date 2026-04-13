@@ -1,5 +1,5 @@
 import { Schemas } from '@qdrant/js-client-rest';
-import { TextDocument } from 'src/rag/domain/entities/text-document.entity';
+import { TextDocument } from "../../domain/entities/text-document.entity";
 export declare class TextDocumentQdrantMapper {
     static toPoint(doc: TextDocument): {
         id: string;

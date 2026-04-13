@@ -22,6 +22,7 @@ const s3_storage_service_1 = require("./infrastructure/s3/s3.storage.service");
 const qdrant_module_1 = require("./infrastructure/qdrant/qdrant.module");
 const prisma_module_1 = require("./infrastructure/prisma/prisma.module");
 const neo4j_module_1 = require("./infrastructure/neo4j/neo4j.module");
+const redis_module_1 = require("./infrastructure/redis/redis.module");
 const qdrant_text_document_repository_1 = require("./infrastructure/qdrant/repositories/qdrant-text-document.repository");
 const qdrant_image_document_repository_1 = require("./infrastructure/qdrant/repositories/qdrant-image-document.repository");
 const neo4j_knowledge_graph_service_1 = require("./infrastructure/neo4j/neo4j-knowledge-graph.service");
@@ -88,6 +89,7 @@ exports.RagModule = RagModule = __decorate([
     (0, common_1.Module)({
         imports: [
             config_1.ConfigModule.forFeature(rag_config_1.ragConfig),
+            redis_module_1.RedisModule,
             ollama_module_1.OllamaModule,
             s3_module_1.S3Module,
             qdrant_module_1.QdrantModule,

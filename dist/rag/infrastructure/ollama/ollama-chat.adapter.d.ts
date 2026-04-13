@@ -1,4 +1,4 @@
-import { IChatLlmPort, LlmOptions } from 'src/rag/domain/ports/chat-llm.port';
+import { IChatLlmPort, LlmOptions } from "../../domain/ports/chat-llm.port";
 import { OllamaService } from './ollama.service';
 export declare class OllamaChatAdapter implements IChatLlmPort {
     private readonly ollama;

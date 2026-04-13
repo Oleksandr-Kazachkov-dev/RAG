@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
-import { ConfidenceThresholds, ConfidenceScore, VerificationResult } from 'src/rag/domain/interfaces/confidence.interface';
-import { IConfidencePort } from 'src/rag/domain/ports/confidence.port';
+import { ConfidenceThresholds, ConfidenceScore, VerificationResult } from "../../domain/interfaces/confidence.interface";
+import { IConfidencePort } from "../../domain/ports/confidence.port";
 interface IEmbeddingPort {
     embed(text: string): Promise<number[]>;
 }

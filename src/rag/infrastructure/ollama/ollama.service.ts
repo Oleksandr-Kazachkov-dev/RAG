@@ -2,6 +2,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
 import axiosRetry from 'axios-retry';
+import { createHash } from 'crypto';
+import { Redis } from "@upstash/redis"
 import {
   RAG_CONFIG,
   TRagConfig,
@@ -28,6 +30,8 @@ export interface LLMOptions {
   seed?: number;
 }
 
+const EMBED_TTL_SECONDS = 60 * 60 * 24;
+
 @Injectable()
 export class OllamaService {
   private readonly baseURL: string;
@@ -41,6 +45,7 @@ export class OllamaService {
   constructor(
     private readonly configService: ConfigService,
     @Inject('LoggerPort') private readonly logger: LoggerPort,
+    @Inject('REDIS_CLIENT') private readonly redis: Redis,
   ) {
     const ragConfig = this.configService.get<TRagConfig>(RAG_CONFIG);
 
@@ -49,11 +54,8 @@ export class OllamaService {
     this.textEmbedModel =
       ragConfig?.ollamaEmbedModelText || 'nomic-embed-text';
 
-    this.chatModel =
-      ragConfig?.ollamaChatModel;
-
-    this.visionModel =
-      ragConfig?.ollamaVisionModel;
+    this.chatModel   = ragConfig?.ollamaChatModel;
+    this.visionModel = ragConfig?.ollamaVisionModel;
 
     if (!this.apiKey) {
       this.logger.warn('OLLAMA_API_KEY is not set!');
@@ -67,18 +69,28 @@ export class OllamaService {
   }
 
   async embed(prompt: string): Promise<number[] | null> {
-    try {
-      const MAX_CHARS = 3000;
-      const safePrompt =
-        prompt.length > MAX_CHARS ? prompt.slice(0, MAX_CHARS) : prompt;
+    const MAX_CHARS = 3000;
+    const safePrompt = prompt.length > MAX_CHARS ? prompt.slice(0, MAX_CHARS) : prompt;
 
+    const cacheKey = `embed:${createHash('sha256')
+      .update(`${this.textEmbedModel}:${safePrompt}`)
+      .digest('hex')}`;
+
+    try {
+      const cached = await this.redis.get<number[]>(cacheKey);
+
+      if (cached) {
+        return cached;
+      }
+    } catch (err: any) {
+      this.logger.warn('embed: Redis get failed', { error: err?.message });
+    }
+
+    try {
       const response = await axios.post(
         `${this.baseURL}/api/embeddings`,
         { model: this.textEmbedModel, prompt: safePrompt },
-        {
-          timeout: this.timeout,
-          headers: this.getHeaders(),
-        },
+        { timeout: this.timeout, headers: this.getHeaders() },
       );
 
       const embedding = response.data?.embedding;
@@ -88,11 +100,19 @@ export class OllamaService {
         return null;
       }
 
+      try {
+        await this.redis.set(
+          cacheKey,
+          JSON.stringify(embedding),
+          { ex: EMBED_TTL_SECONDS }
+        );
+      } catch (err: any) {
+        this.logger.warn('embed: Redis set failed', { error: err?.message });
+      }
+
       return embedding;
     } catch (error) {
-      this.logger.warn('Embedding skipped', {
-        error: this.getErrorMessage(error),
-      });
+      this.logger.warn('Embedding skipped', { error: this.getErrorMessage(error) });
       return null;
     }
   }
@@ -117,10 +137,7 @@ export class OllamaService {
           temperature: 0,
           stream: false,
         },
-        {
-          timeout: this.timeout,
-          headers: this.getHeaders(),
-        },
+        { timeout: this.timeout, headers: this.getHeaders() },
       );
 
       const content = response.data?.message?.content;
@@ -154,12 +171,12 @@ export class OllamaService {
         messages,
         stream: false,
         options: {
-          temperature: options.temperature ?? 0,
-          top_p: options.topP,
-          top_k: options.topK,
-          num_predict: options.maxTokens,
+          temperature:    options.temperature ?? 0,
+          top_p:          options.topP,
+          top_k:          options.topK,
+          num_predict:    options.maxTokens,
           repeat_penalty: options.repeatPenalty,
-          seed: options.seed,
+          seed:           options.seed,
         },
       };
 
@@ -172,10 +189,7 @@ export class OllamaService {
       const response = await axios.post(
         `${this.baseURL}/api/chat`,
         requestBody,
-        {
-          timeout: this.timeout,
-          headers: this.getHeaders(),
-        },
+        { timeout: this.timeout, headers: this.getHeaders() },
       );
 
       if (!response.data?.message?.content) {
@@ -184,9 +198,7 @@ export class OllamaService {
 
       return response.data.message.content;
     } catch (error) {
-      this.logger.error('LLM request failed', {
-        error: this.getErrorMessage(error),
-      });
+      this.logger.error('LLM request failed', { error: this.getErrorMessage(error) });
       throw new Error(`LLM failed: ${this.getErrorMessage(error)}`);
     }
   }
@@ -201,7 +213,7 @@ export class OllamaService {
       messages.push({ role: 'system', content: options.systemPrompt });
     }
     messages.push({ role: 'user', content: prompt });
-  
+
     const requestBody: Record<string, any> = {
       model: this.chatModel,
       messages,
@@ -215,13 +227,13 @@ export class OllamaService {
         seed:           options.seed,
       },
     };
-  
+
     Object.keys(requestBody.options).forEach(key => {
       if (requestBody.options[key] === undefined) {
         delete requestBody.options[key];
       }
     });
-  
+
     const response = await axios.post(
       `${this.baseURL}/api/chat`,
       requestBody,
@@ -237,17 +249,16 @@ export class OllamaService {
         httpsAgent: new (require('https').Agent)({ keepAlive: true }),
       },
     );
-  
+
     const stream: import('stream').Readable = response.data;
-  
     let tail = '';
-  
+
     for await (const chunk of stream) {
       tail += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
-  
+
       const lines = tail.split('\n');
       tail = lines.pop() ?? '';
-  
+
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
@@ -256,9 +267,7 @@ export class OllamaService {
             yield parsed.message.content;
           }
           if (parsed.done) return;
-        } catch {
-
-        }
+        } catch { }
       }
     }
   }
@@ -279,17 +288,12 @@ export class OllamaService {
             },
           ],
         },
-        {
-          timeout: this.visionTimeout,
-          headers: this.getHeaders(),
-        },
+        { timeout: this.visionTimeout, headers: this.getHeaders() },
       );
 
       return response.data?.message?.content;
     } catch (error) {
-      this.logger.error('Image detection failed', {
-        error: this.getErrorMessage(error),
-      });
+      this.logger.error('Image detection failed', { error: this.getErrorMessage(error) });
       throw new Error('Image detection failed');
     }
   }
@@ -298,10 +302,7 @@ export class OllamaService {
     try {
       const res = await axios.get(
         `${this.baseURL}/api/tags`,
-        {
-          timeout: 5000,
-          headers: this.getHeaders(),
-        },
+        { timeout: 5000, headers: this.getHeaders() },
       );
       return res.status === 200;
     } catch {
@@ -313,12 +314,8 @@ export class OllamaService {
     try {
       const res = await axios.get(
         `${this.baseURL}/api/tags`,
-        {
-          timeout: 5000,
-          headers: this.getHeaders(),
-        },
+        { timeout: 5000, headers: this.getHeaders() },
       );
-
       return res.data?.models?.map((m: any) => m.name) || [];
     } catch {
       return [];

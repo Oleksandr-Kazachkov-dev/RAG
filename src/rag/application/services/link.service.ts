@@ -1,5 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import pLimit from 'p-limit';
+import { Redis } from "@upstash/redis"
 
 import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
 import {
@@ -19,13 +20,10 @@ export interface LinkSearchResult {
 }
 
 const LINK_STOP = new Set([
-  // Ukrainian prepositions / conjunctions / question words
   'де', 'як', 'що', 'який', 'яка', 'яке', 'які', 'чи', 'у', 'в',
   'до', 'від', 'із', 'зі', 'та', 'і', 'й', 'або', 'але', 'при',
   'без', 'між', 'після', 'перед', 'над', 'під', 'через', 'для',
   'мені', 'мне', 'це', 'той', 'та', 'ті', 'цей', 'ця', 'ці',
-
-  // Link-specific noise
   'посилання', 'лінк', 'лінка', 'сайт', 'знайти', 'відкрити',
   'where', 'find', 'give', 'what', 'is', 'the', 'a', 'an', 'of', 'for',
   'and', 'or', 'but', 'with', 'by', 'from', 'to', 'at', 'on', 'how',
@@ -33,7 +31,6 @@ const LINK_STOP = new Set([
 ]);
 
 const ABBR_VARIANTS: Record<string, string[]> = {
-  // Network / IT
   vpn: ['впн', 'vpn'],
   впн: ['vpn', 'впн'],
   'вpн': ['vpn', 'впн'],
@@ -48,8 +45,6 @@ const ABBR_VARIANTS: Record<string, string[]> = {
   https: ['хттпс', 'https'],
   ssl: ['ссл', 'ssl'],
   ссл: ['ssl', 'ссл'],
-
-  // HR / tools
   hrm: ['хрм', 'hrm'],
   хрм: ['hrm', 'хрм'],
   crm: ['срм', 'crm'],
@@ -75,15 +70,18 @@ const ABBR_VARIANTS: Record<string, string[]> = {
   реєстрація: ['реєстр'],
 };
 
-const MIN_SCORE_QUERY = 4;
+const MIN_SCORE_QUERY   = 4;
 const MIN_SCORE_CONTEXT = 0;
 
-// Link health check config
-const LINK_CHECK_TIMEOUT_MS = 5000;
+const LINK_CHECK_TIMEOUT_MS  = 5000;
 const LINK_CHECK_CONCURRENCY = 5;
 
+const QUERY_CACHE_TTL      = 60 * 30;
+const REACHABILITY_TTL_OK  = 60 * 60 * 4; 
+const REACHABILITY_TTL_ERR = 60 * 10;   
+
 function expandVariants(word: string): string[] {
-  const lower = word.toLowerCase();
+  const lower    = word.toLowerCase();
   const variants = ABBR_VARIANTS[lower] ?? [];
   return [...new Set([lower, ...variants])];
 }
@@ -105,6 +103,10 @@ function extractQueryKeywords(query: string): string[] {
   return [...expanded];
 }
 
+function queryCacheKey(prefix: string, query: string): string {
+  return `${prefix}:${query.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 120)}`;
+}
+
 @Injectable()
 export class LinkService {
   constructor(
@@ -112,6 +114,8 @@ export class LinkService {
     private readonly repo: IKnowledgeLinkRepository,
     @Inject('LoggerPort')
     private readonly logger: LoggerPort,
+    @Inject('REDIS_CLIENT')
+    private readonly redis: Redis,
   ) {}
 
   async indexLinksFromFiles(
@@ -124,7 +128,7 @@ export class LinkService {
 
       try {
         const content = file.buffer.toString('utf-8');
-        const links = extractLinksFromMarkdown(content, file.originalname);
+        const links   = extractLinksFromMarkdown(content, file.originalname);
 
         if (!links.length) continue;
 
@@ -133,19 +137,21 @@ export class LinkService {
         const saved = await this.repo.upsertMany(links);
 
         this.logger.log('Links indexed', {
-          file: file.originalname,
-          count: saved,
+          file:   file.originalname,
+          count:  saved,
           sample: links.slice(0, 3).map(l => `${l.label} → ${l.url}`),
         });
 
         linksIndexed += saved;
       } catch (err: any) {
         this.logger.warn('Link indexing failed for file', {
-          file: file.originalname,
+          file:  file.originalname,
           error: err?.message,
         });
       }
     }
+
+    await this.bustLinkCache();
 
     return { filesProcessed: files.length, linksIndexed };
   }
@@ -153,70 +159,79 @@ export class LinkService {
   async findLinksForQuery(query: string): Promise<LinkSearchResult> {
     if (!isLinkQuery(query)) return { found: false, links: [] };
 
+    const cacheKey = queryCacheKey('links-query', query);
+
+    const cached = await this.redisGet<LinkSearchResult>(cacheKey);
+    if (cached) return cached;
+
     const keywords = extractQueryKeywords(query);
     this.logger.log('LinkService: searching by query', { keywords });
 
-    const raw = await this.repo.findByKeywords(keywords);
-
-    const valid = this.filterValid(raw);
-    const alive = await this.filterReachable(valid);
-    const ranked = this.rankLinks(alive, query, keywords);
+    const raw     = await this.repo.findByKeywords(keywords);
+    const valid   = this.filterValid(raw);
+    const alive   = await this.filterReachable(valid);
+    const ranked  = this.rankLinks(alive, query, keywords);
 
     const relevant = ranked.filter(
       l => this.linkScore(l, query.toLowerCase(), keywords) >= MIN_SCORE_QUERY,
     );
 
     this.logger.log('LinkService: query relevance filter', {
-      before: ranked.length,
-      after: relevant.length,
+      before:    ranked.length,
+      after:     relevant.length,
       threshold: MIN_SCORE_QUERY,
     });
 
-    if (!relevant.length) return { found: true, links: [] };
+    const result: LinkSearchResult = relevant.length
+      ? { found: true,  links: relevant, block: this.formatLinksBlock(relevant) }
+      : { found: true,  links: [] };
 
-    const block = this.formatLinksBlock(relevant);
-    return { found: true, links: relevant, block };
+    await this.redisSet(cacheKey, result, QUERY_CACHE_TTL);
+    return result;
   }
 
   async findLinksForContext(query: string): Promise<LinkSearchResult> {
     const keywords = extractQueryKeywords(query);
     if (!keywords.length) return { found: false, links: [] };
 
+    const cacheKey = queryCacheKey('links-ctx', query);
+
+    const cached = await this.redisGet<LinkSearchResult>(cacheKey);
+    if (cached) return cached;
+
     this.logger.log('LinkService: context search', { keywords });
 
-    const raw = await this.repo.findByKeywords(keywords);
-
-    const valid = this.filterValid(raw);
-    const alive = await this.filterReachable(valid);
-    const ranked = this.rankLinks(alive, query, keywords);
+    const raw     = await this.repo.findByKeywords(keywords);
+    const valid   = this.filterValid(raw);
+    const alive   = await this.filterReachable(valid);
+    const ranked  = this.rankLinks(alive, query, keywords);
 
     const relevant = ranked.filter(
       l => this.linkScore(l, query.toLowerCase(), keywords) >= MIN_SCORE_CONTEXT,
     );
 
     this.logger.log('LinkService: context relevance filter', {
-      before: ranked.length,
-      after: relevant.length,
+      before:    ranked.length,
+      after:     relevant.length,
       threshold: MIN_SCORE_CONTEXT,
     });
 
-    if (!relevant.length) return { found: false, links: [] };
+    const result: LinkSearchResult = relevant.length
+      ? { found: true,  links: relevant, block: this.formatLinksBlock(relevant) }
+      : { found: false, links: [] };
 
-    const block = this.formatLinksBlock(relevant);
-    return { found: true, links: relevant, block };
+    await this.redisSet(cacheKey, result, QUERY_CACHE_TTL);
+    return result;
   }
 
   private filterValid(links: IKnowledgeLink[]): IKnowledgeLink[] {
     return links.filter(l => isValidUrl(l.url));
   }
 
-  private async filterReachable(
-    links: IKnowledgeLink[],
-  ): Promise<IKnowledgeLink[]> {
+  private async filterReachable(links: IKnowledgeLink[]): Promise<IKnowledgeLink[]> {
     if (!links.length) return [];
 
-    const limit = pLimit(LINK_CHECK_CONCURRENCY);
-
+    const limit  = pLimit(LINK_CHECK_CONCURRENCY);
     const checks = await Promise.allSettled(
       links.map(link =>
         limit(async () => {
@@ -228,125 +243,130 @@ export class LinkService {
 
     return checks
       .filter(
-        (r): r is PromiseFulfilledResult<IKnowledgeLink | null> =>
-          r.status === 'fulfilled',
+        (r): r is PromiseFulfilledResult<IKnowledgeLink | null> => r.status === 'fulfilled',
       )
       .map(r => r.value)
       .filter((v): v is IKnowledgeLink => v !== null);
   }
 
-  /**
-   * HEAD -> fallback GET
-   */
-  private async isReachable(
-    url: string,
-    timeoutMs = LINK_CHECK_TIMEOUT_MS,
-  ): Promise<boolean> {
+  private async isReachable(url: string, timeoutMs = LINK_CHECK_TIMEOUT_MS): Promise<boolean> {
     if (!isValidUrl(url)) return false;
 
+    const cacheKey = `url-alive:${url}`;
+
+    const cached = await this.redisGet<boolean>(cacheKey);
+    if (cached !== null) return cached;
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout    = setTimeout(() => controller.abort(), timeoutMs);
+
+    let reachable = false;
 
     try {
-      // 1) Швидка перевірка HEAD
       const headRes = await fetch(url, {
-        method: 'HEAD',
-        redirect: 'follow',
-        signal: controller.signal,
+        method: 'HEAD', redirect: 'follow', signal: controller.signal,
       });
 
-      this.logger.log('Link HEAD check', {
-        url,
-        status: headRes.status,
-        finalUrl: headRes.url,
-      });
+      this.logger.log('Link HEAD check', { url, status: headRes.status });
 
       if (this.isAllowedStatus(headRes.status)) {
-        return true;
+        reachable = true;
+      } else {
+        const getRes = await fetch(url, {
+          method: 'GET', redirect: 'follow', signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0 LinkChecker/1.0' },
+        });
+        this.logger.log('Link GET check', { url, status: getRes.status });
+        reachable = this.isAllowedStatus(getRes.status);
       }
-
-      // 2) Fallback на GET (деякі сайти не люблять HEAD)
-      const getRes = await fetch(url, {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 LinkChecker/1.0',
-        },
-      });
-
-      this.logger.log('Link GET check', {
-        url,
-        status: getRes.status,
-        finalUrl: getRes.url,
-      });
-
-      return this.isAllowedStatus(getRes.status);
     } catch (err: any) {
-      this.logger.warn('Link check failed', {
-        url,
-        error: err?.message ?? String(err),
-      });
-      return false;
+      this.logger.warn('Link check failed', { url, error: err?.message ?? String(err) });
+      reachable = false;
     } finally {
       clearTimeout(timeout);
     }
+
+    const ttl = reachable ? REACHABILITY_TTL_OK : REACHABILITY_TTL_ERR;
+    await this.redisSet(cacheKey, reachable, ttl);
+
+    return reachable;
   }
 
   private isAllowedStatus(status: number): boolean {
     return [200, 201, 202, 204, 301, 302, 307, 308].includes(status);
   }
 
-  private linkScore(
-    link: IKnowledgeLink,
-    query: string,
-    keywords: string[],
-  ): number {
+  private linkScore(link: IKnowledgeLink, query: string, keywords: string[]): number {
     let score = 0;
 
-    const label = link.label.toLowerCase();
-    const context = link.context.toLowerCase();
+    const label      = link.label.toLowerCase();
+    const context    = link.context.toLowerCase();
     const sourceFile = link.sourceFile.toLowerCase();
 
     if (query.includes(label)) score += 10;
 
     for (const kw of keywords) {
       if (link.keywords.some(k => k === kw || k.startsWith(kw))) score += 3;
-      if (label.includes(kw)) score += 2;
-      if (context.includes(kw)) score += 1;
+      if (label.includes(kw))      score += 2;
+      if (context.includes(kw))    score += 1;
       if (sourceFile.includes(kw)) score += 1;
     }
 
-    if (link.linkType === 'image' && /фото|image|photo|зображ|скрин/i.test(query)) {
-      score += 5;
-    }
-
-    if (link.linkType === 'video' && /відео|video|запис/i.test(query)) {
-      score += 5;
-    }
+    if (link.linkType === 'image' && /фото|image|photo|зображ|скрин/i.test(query)) score += 5;
+    if (link.linkType === 'video' && /відео|video|запис/i.test(query))              score += 5;
 
     return score;
   }
 
-  private rankLinks(
-    links: IKnowledgeLink[],
-    query: string,
-    keywords: string[],
-  ): IKnowledgeLink[] {
+  private rankLinks(links: IKnowledgeLink[], query: string, keywords: string[]): IKnowledgeLink[] {
     const q = query.toLowerCase();
-
-    return [...links].sort(
-      (a, b) => this.linkScore(b, q, keywords) - this.linkScore(a, q, keywords),
-    );
+    return [...links].sort((a, b) => this.linkScore(b, q, keywords) - this.linkScore(a, q, keywords));
   }
 
   private formatLinksBlock(links: IKnowledgeLink[]): string {
     if (!links.length) return '';
+    return links.map(l => `${l.label}**: ${l.url}`).join('\n');
+  }
 
-    return links
-      .map(l => {
-        return `${l.label}**: ${l.url}`;
-      })
-      .join('\n');
+  private async redisGet<T>(key: string): Promise<T | null> {
+    try {
+      const raw = await this.redis.get<T>(key);
+
+      return raw ?? null;
+    } catch (err: any) {
+      this.logger.warn('LinkService: Redis get failed', { key, error: err?.message });
+      return null;
+    }
+  }
+
+  private async redisSet(key: string, value: unknown, ttl: number): Promise<void> {
+    try {
+      await this.redis.set(
+        key,
+        value,
+        { ex: ttl }
+      );
+    } catch (err: any) {
+      this.logger.warn('LinkService: Redis set failed', { key, error: err?.message });
+    }
+  }
+
+  private async bustLinkCache(): Promise<void> {
+    try {
+      const patterns = ['rag:links-query:*', 'rag:links-ctx:*'];
+      for (const pattern of patterns) {
+        let cursor = '0';
+        do {
+          const [nextCursor, keys] = await this.redis.scan(cursor, {
+            match: pattern,
+            count: 100,
+          });
+          if (keys.length) await this.redis.del(...keys);
+        } while (cursor !== '0');
+      }
+      this.logger.log('LinkService: link cache busted');
+    } catch (err: any) {
+      this.logger.warn('LinkService: cache bust failed', { error: err?.message });
+    }
   }
 }

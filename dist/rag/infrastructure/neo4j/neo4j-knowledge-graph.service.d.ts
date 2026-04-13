@@ -1,6 +1,6 @@
 import { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
+import { LoggerPort } from "../../shared/application/ports/logger.port";
 export interface KnowledgeGraphEntity {
     id: string;
     name: string;

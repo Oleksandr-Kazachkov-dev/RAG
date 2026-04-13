@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { Schemas } from '@qdrant/js-client-rest';
-import { CollectionConfig } from 'src/rag/domain/value-objects/collection-config.vo';
+import { CollectionConfig } from "../../domain/value-objects/collection-config.vo";
 export type SearchMode = 'precise' | 'wide' | 'balanced';
 export declare class RagQdrantService {
     private readonly configService;

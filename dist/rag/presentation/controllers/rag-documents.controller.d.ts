@@ -3,7 +3,7 @@ import { CommandBusPort } from '../../shared/application/ports/command-bus.port'
 import { AskQuestionHandler } from '../../application/handlers/ask-question.handler';
 import { ApiResponse } from '../api-response/api-response';
 import { AskDto } from '../dto/ask.dto';
-import { IGenerateAnswer, IUploadKnowledge, IDocumentWithoutEmbedding, IDocumentWithEmbedding } from 'src/rag/application/common/interfaces/rag-documents.interfaces';
+import { IGenerateAnswer, IUploadKnowledge, IDocumentWithoutEmbedding, IDocumentWithEmbedding } from "../../application/common/interfaces/rag-documents.interfaces";
 import { RetrieveDto } from '../dto/retrieve.dto';
 import { UploadFolderDto } from '../dto/upload-folder.dto';
 export declare class RagDocumentsController {

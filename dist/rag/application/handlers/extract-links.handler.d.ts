@@ -1,4 +1,4 @@
-import { LoggerPort } from 'src/rag/shared/application/ports/logger.port';
+import { LoggerPort } from "../../shared/application/ports/logger.port";
 import { LinkService } from '../services/link.service';
 import { IndexLinksCommand } from '../commands/extract-links.command';
 export declare class ExtractLinksHandler {
